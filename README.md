@@ -9,8 +9,6 @@ Go workflows for the [Chainlink Runtime Environment (CRE)](https://docs.chain.li
 
 Language is **Go** (WASM / `wasip1`). Business logic is intentionally out of scope here — this repo bootstrap makes tooling, layout, and docs usable so W1/W2 can be implemented next.
 
-Design context: EverStrat monorepo `TECH_SPEC.md` §5 / §7. Receivers live in [`everstrat-xyz/contracts`](https://github.com/everstrat-xyz/contracts).
-
 ## Prerequisites
 
 - **Go** `1.25.3+` (`go version`)
@@ -88,8 +86,8 @@ cp .env.example .env
 go mod tidy
 
 # Scaffold ticks (no writeReport yet)
-cre workflow simulate queue-keeper --target staging-settings
-cre workflow simulate strategy-keeper --target staging-settings
+cre workflow simulate queue-keeper --target staging-settings --trigger-index 0
+cre workflow simulate strategy-keeper --target staging-settings --trigger-index 0
 ```
 
 Point configs at deployed contracts by editing `queue-keeper/config.*.json` and `strategy-keeper/config.*.json`:

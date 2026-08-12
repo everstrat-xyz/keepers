@@ -4,10 +4,10 @@ tidy:
 	go mod tidy
 
 simulate-queue:
-	cre workflow simulate queue-keeper --target staging-settings
+	cre workflow simulate queue-keeper --target staging-settings --trigger-index 0
 
 simulate-strategy:
-	cre workflow simulate strategy-keeper --target staging-settings
+	cre workflow simulate strategy-keeper --target staging-settings --trigger-index 0
 
 simulate: simulate-queue simulate-strategy
 
