@@ -6,8 +6,9 @@ Go workflows for the [Chainlink Runtime Environment (CRE)](https://docs.chain.li
 | --- | --- | --- |
 | `queue-keeper/` | W1 — exit-queue automation | `CREQueueExecutor` |
 | `strategy-keeper/` | W2 — strategy automation | `CREStrategyExecutor` |
+| `pkg/` | Shared Envelope / report / chain-config code used by both | — |
 
-Language is **Go** (WASM / `wasip1`). Business logic is intentionally out of scope here — this repo bootstrap makes tooling, layout, and docs usable so W1/W2 can be implemented next.
+Language is **Go** (WASM / `wasip1`). Keeper business logic is still out of scope — W1/W2 remain cron scaffolds ([#3](https://github.com/everstrat-xyz/keepers/issues/3) / [#4](https://github.com/everstrat-xyz/keepers/issues/4)) — but the report encoding they will both use is implemented and tested here.
 
 ## Prerequisites
 
@@ -64,6 +65,8 @@ CCIP chain selectors used in workflow config / `CREReceiverBase`:
 | Ethereum Mainnet | `5009297550715157269` |
 
 Pass the **production** forwarder into `CREQueueExecutor` / `CREStrategyExecutor` constructors (`KEYSTONE_FORWARDER` in contracts deploy scripts). Simulation consumers that validate `msg.sender` against a forwarder must use the mock address from `supported-chains` for that tenant.
+
+Both tables are compiled into [`pkg/chains`](pkg/chains/chains.go) and pinned by unit tests, so a config that names a chain gets the right selector and forwarder without retyping them. Keep the two in sync when the directory changes.
 
 > Older samples sometimes cite Sepolia mock `0x15fC6ae953E024d975e77382eEeC56A9101f9F88`. That address is **not** what the current Forwarder Directory lists for Sepolia — treat it as stale unless your org’s `supported-chains` output says otherwise.
 
@@ -143,20 +146,65 @@ Onchain registry + identity binding for live `writeReport` are covered by the Se
 ├── secrets.yaml           # Secret name → env var map
 ├── .env.example
 ├── go.mod                 # Single module for all workflows
+├── Makefile               # make check = vet + test + wasip1 build
+├── docs/
+│   └── envelope.md        # Envelope rules W1/W2 must obey
+├── scripts/
+│   └── gen-envelope-fixtures.sh
 ├── contracts/evm/src/
-│   ├── abi/               # Drop ABIs here; `cre generate-bindings evm`
+│   ├── abi/               # Vendored ABIs + Go accessors (see SOURCE.md)
 │   └── keystone/          # Keystone-related artifacts
+├── pkg/
+│   ├── envelope/          # abi.encode(Envelope) codec + staleness guards
+│   ├── queue/             # W1 actions + params (no amounts)
+│   ├── strategy/          # W2 actions (action-only reports)
+│   ├── keystone/          # Workflow-identity metadata helpers
+│   ├── chains/            # Per-chain constants + config validation
+│   └── registry/          # Registry keys and role identifiers
 ├── queue-keeper/          # W1 scaffold
 └── strategy-keeper/       # W2 scaffold
 ```
 
-Shared Envelope encode/decode + ABI helpers: [issue #2](https://github.com/everstrat-xyz/keepers/issues/2).
+## Shared packages
+
+Both workflows encode reports through the same code, so W1 and W2 cannot drift
+from each other or from `CREReceiverBase`.
+
+| Package | What it gives you |
+| --- | --- |
+| `pkg/envelope` | `abi.encode(Envelope)` codec, plus `Validate` / `NextSequence` / `Deadline` mirroring the receiver's chain, replay and staleness guards |
+| `pkg/queue` | `QueueAction` ordinals, params encoders, and `Report.PriceBatch` / `ProcessRequests` / `AdvanceCursor` |
+| `pkg/strategy` | `StrategyAction` ordinals, the `strategyUpkeepStatus` priority order, and action-only `Report.Build` |
+| `pkg/keystone` | Workflow name → `bytes10`, 64-byte metadata encode/decode, and a binding pre-flight check for the cutover |
+| `pkg/chains` | Chain selectors and forwarder addresses, plus `Resolve` to validate a workflow's `config.*.json` |
+| `pkg/registry` | `keccak256` Registry keys (`CONTROLLER`, `EXIT_QUEUE`, …) and role ids, so only the Registry address needs configuring |
+| `contracts/evm/src/abi` | Vendored contract ABIs, parsed on demand |
+
+**Hard constraint:** a report must never carry an authoritative ETH amount, NAV,
+or price — params are claims and hints only. The APIs above are shaped so that
+is not expressible, and unit tests reject amount-bearing params.
+
+Read [`docs/envelope.md`](docs/envelope.md) before writing W1/W2 logic: it
+covers the `sequence`, `observedAt` and `MAX_REPORT_AGE` rules, the
+`ProcessRequests` prefix constraint, and the identity-binding rules.
+
+### Local checks
+
+```bash
+make check      # go vet + go test (host) + wasip1 build (workflows)
+make test
+make fixtures   # regenerate Solidity-derived Envelope fixtures (needs Foundry + jq)
+```
+
+Note that `go test ./...` does **not** work from a host toolchain: the workflow
+mains are `//go:build wasip1`, so those directories have no buildable files on
+linux/darwin. Use `./pkg/... ./contracts/...`, as the Makefile and CI do.
 
 ## CI baseline
 
 GitHub Actions (`.github/workflows/ci.yml`):
 
-1. **Always:** `go vet` / `go test` on non-WASM packages (when added) + module tidy check.
+1. **Always:** module tidy check, `go vet` + `go test` on the host packages (`./pkg/...`, `./contracts/...`), `gofmt`, and a `wasip1` vet + build of both workflows.
 2. **Simulate:** `cre workflow simulate` for `queue-keeper` and `strategy-keeper`, gated on `CRE_ETH_PRIVATE_KEY` (and optional `CRE_API_KEY`) so PRs without secrets still get compile/vet signal.
 
 Full simulate/lint matrix expansion: [issue #8](https://github.com/everstrat-xyz/keepers/issues/8).

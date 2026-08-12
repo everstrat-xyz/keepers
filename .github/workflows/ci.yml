@@ -28,21 +28,28 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      # Workflow mains are //go:build wasip1. Host packages arrive with issue #2;
-      # until then, compile the scaffolds to WASM as the compile gate.
-      - name: go test (host packages, if any)
-        run: |
-          pkgs="$(go list ./... 2>/dev/null || true)"
-          if [ -z "$pkgs" ]; then
-            echo "No host packages yet (expected for WASM-only scaffold)."
-            exit 0
-          fi
-          go test ./...
+      # The workflow mains are //go:build wasip1, so `./...` excludes all their
+      # files on linux and `go vet`/`go test` fail with "build constraints
+      # exclude all Go files". Host packages are addressed explicitly; the
+      # workflows get their own wasip1 build step below.
+      - name: go vet (host packages)
+        run: go vet ./pkg/... ./contracts/...
 
-      - name: wasip1 build scaffolds
+      - name: go test (host packages)
+        run: go test ./pkg/... ./contracts/...
+
+      - name: wasip1 vet + build scaffolds
         run: |
+          GOOS=wasip1 GOARCH=wasm go vet ./queue-keeper/ ./strategy-keeper/
           GOOS=wasip1 GOARCH=wasm go build -o /tmp/queue-keeper.wasm ./queue-keeper/
           GOOS=wasip1 GOARCH=wasm go build -o /tmp/strategy-keeper.wasm ./strategy-keeper/
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l pkg contracts queue-keeper strategy-keeper)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed:"; echo "$unformatted"; exit 1
+          fi
 
   simulate:
     name: cre workflow simulate
