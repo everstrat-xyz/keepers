@@ -1,0 +1,97 @@
+name: ci
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go vet / tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.3"
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Ensure go.sum is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      # Workflow mains are //go:build wasip1. Host packages arrive with issue #2;
+      # until then, compile the scaffolds to WASM as the compile gate.
+      - name: go test (host packages, if any)
+        run: |
+          pkgs="$(go list ./... 2>/dev/null || true)"
+          if [ -z "$pkgs" ]; then
+            echo "No host packages yet (expected for WASM-only scaffold)."
+            exit 0
+          fi
+          go test ./...
+
+      - name: wasip1 build scaffolds
+        run: |
+          GOOS=wasip1 GOARCH=wasm go build -o /tmp/queue-keeper.wasm ./queue-keeper/
+          GOOS=wasip1 GOARCH=wasm go build -o /tmp/strategy-keeper.wasm ./strategy-keeper/
+
+  simulate:
+    name: cre workflow simulate
+    runs-on: ubuntu-latest
+    needs: go
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide whether to simulate
+        id: gate
+        env:
+          # Do not use secrets in job-level `if` (GitHub rejects the workflow).
+          CRE_ETH_PRIVATE_KEY: ${{ secrets.CRE_ETH_PRIVATE_KEY }}
+        run: |
+          if [ -z "${CRE_ETH_PRIVATE_KEY}" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "CRE_ETH_PRIVATE_KEY unset — skipping simulate (expected until org secrets are wired)."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          go-version: "1.25.3"
+
+      - name: Install CRE CLI
+        if: steps.gate.outputs.run == 'true'
+        env:
+          CRE_CLI_VERSION: v1.29.0
+        run: |
+          set -euo pipefail
+          curl -sSL "https://github.com/smartcontractkit/cre-cli/releases/download/${CRE_CLI_VERSION}/cre_linux_amd64.tar.gz" \
+            -o /tmp/cre.tar.gz
+          tar -xzf /tmp/cre.tar.gz -C /tmp
+          BIN="$(find /tmp -maxdepth 1 -type f -name 'cre*' | head -n1)"
+          sudo mv "$BIN" /usr/local/bin/cre
+          sudo chmod +x /usr/local/bin/cre
+          cre version
+
+      - name: Simulate scaffolds
+        if: steps.gate.outputs.run == 'true'
+        env:
+          CRE_ETH_PRIVATE_KEY: ${{ secrets.CRE_ETH_PRIVATE_KEY }}
+          CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+        run: |
+          set -euo pipefail
+          export SEPOLIA_RPC_URL="${SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}"
+          go mod download
+          cre workflow simulate queue-keeper --target staging-settings --non-interactive --trigger-index 0
+          cre workflow simulate strategy-keeper --target staging-settings --non-interactive --trigger-index 0

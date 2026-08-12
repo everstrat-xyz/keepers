@@ -1,0 +1,18 @@
+# Global CRE project settings (RPC targets). Workflow names live in each workflow.yaml.
+# Docs: https://docs.chain.link/cre/reference/project-configuration-go
+
+staging-settings:
+  rpcs:
+    # Public Sepolia RPC for local simulate; override with SEPOLIA_RPC_URL if preferred.
+    - chain-name: ethereum-testnet-sepolia
+      url: https://ethereum-sepolia-rpc.publicnode.com
+
+production-settings:
+  # Optional: set for multi-sig ownership of onchain-registry workflows.
+  # account:
+  #   workflow-owner-address: "0x..."
+  rpcs:
+    - chain-name: ethereum-testnet-sepolia
+      url: ${SEPOLIA_RPC_URL}
+    - chain-name: ethereum-mainnet
+      url: ${MAINNET_RPC_URL}
