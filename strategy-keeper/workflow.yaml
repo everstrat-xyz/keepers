@@ -1,0 +1,19 @@
+# W2 — strategy-keeper (CREStrategyExecutor consumer)
+
+staging-settings:
+  user-workflow:
+    workflow-name: "everstrat-strategy-keeper-staging"
+    deployment-registry: "private"
+  workflow-artifacts:
+    workflow-path: "."
+    config-path: "./config.staging.json"
+    secrets-path: ""
+
+production-settings:
+  user-workflow:
+    workflow-name: "everstrat-strategy-keeper-production"
+    deployment-registry: "private"
+  workflow-artifacts:
+    workflow-path: "."
+    config-path: "./config.production.json"
+    secrets-path: ""
