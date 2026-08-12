@@ -39,6 +39,21 @@ const (
 	IExitQueue       Name = "IExitQueue"
 	IAMM             Name = "IAMM"
 	IStrategyManager Name = "IStrategyManager"
+
+	// Pausable is the OpenZeppelin `paused()` fragment. It is hand-written
+	// rather than vendored: the EverStrat interfaces inherit Pausable without
+	// re-declaring it, so it appears in no forge artifact — yet both
+	// `*UpkeepStatus` views gate on it, so the keepers must read it too.
+	Pausable Name = "Pausable"
+
+	// Multicall3 is the canonical aggregator, hand-written from the published
+	// interface rather than vendored from EverStrat's build.
+	//
+	// It exists here because CRE caps a workflow at 15 contract reads per
+	// execution (ChainRead.CallLimit). Batching sub-calls through aggregate3 is
+	// what makes a queue scan deeper than the on-chain view's window possible
+	// at all — see pkg/evmread.
+	Multicall3 Name = "Multicall3"
 )
 
 // All lists every vendored ABI. Used by tests to assert the embed set stays
@@ -52,6 +67,8 @@ var All = []Name{
 	IExitQueue,
 	IAMM,
 	IStrategyManager,
+	Pausable,
+	Multicall3,
 }
 
 type parsed struct {

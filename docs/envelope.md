@@ -71,9 +71,21 @@ a reverted delivery does not consume a number.
 
 `observedAt` is the unix second at which the workflow observed the state its
 report claims — **not** the time the report was built, and not the time it is
-delivered. Set it from the block or read timestamp the observation came from. A
-workflow that stamps `now` at build time is claiming freshness it did not
-verify.
+delivered.
+
+> **Take it from the observed block, never from `runtime.Now()`.**
+>
+> `runtime.Now()` is the DON's wall clock. The receiver compares `observedAt`
+> against `block.timestamp` with **zero** tolerance in the future direction, so
+> a DON clock even one second ahead of the chain rejects *every* report. Reading
+> the block's own timestamp (`evmread.BlockTimestamp`) guarantees `observedAt`
+> is behind the delivering block rather than racing it.
+>
+> The same applies to any age comparison against chain state: a batch's
+> `createdAt` was recorded from `block.timestamp`, so comparing it to wall-clock
+> time is comparing two different clocks. This was caught on the local fork
+> harness ([docs/LOCAL_FORK.md](LOCAL_FORK.md)) when W1 disagreed with
+> `queueUpkeepStatus` about whether a batch had reached `minBatchAge`.
 
 Two failure directions:
 

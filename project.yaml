@@ -1,6 +1,14 @@
 # Global CRE project settings (RPC targets). Workflow names live in each workflow.yaml.
 # Docs: https://docs.chain.link/cre/reference/project-configuration-go
 
+# Local anvil fork of Sepolia with the protocol deployed. This is the only
+# target that exercises the workflows' EVM reads end to end before the Sepolia
+# cutover — see docs/LOCAL_FORK.md for the recipe.
+local-settings:
+  rpcs:
+    - chain-name: ethereum-testnet-sepolia
+      url: http://127.0.0.1:8545
+
 staging-settings:
   rpcs:
     # Public Sepolia RPC for local simulate; override with SEPOLIA_RPC_URL if preferred.

@@ -2,10 +2,10 @@
   "schedule": "0 */5 * * * *",
   "chainName": "ethereum-testnet-sepolia",
   "chainSelector": "16015286601757825753",
-  "registryAddress": "0x0000000000000000000000000000000000000000",
-  "queueExecutorAddress": "0x0000000000000000000000000000000000000000",
+  "registryAddress": "0x9E53ccCEb400c5466Ec14161e5f999ADBee78aB3",
+  "queueExecutorAddress": "0xdf69EF1E078606Da64320cAEB05aa6CacF104AD6",
   "shadowMode": true,
   "maxReportAgeSeconds": 3600,
   "maxBatchScan": 250,
-  "blockTag": "finalized"
+  "blockTag": "latest"
 }

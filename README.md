@@ -8,7 +8,7 @@ Go workflows for the [Chainlink Runtime Environment (CRE)](https://docs.chain.li
 | `strategy-keeper/` | W2 — strategy automation | `CREStrategyExecutor` |
 | `pkg/` | Shared Envelope / report / chain-config code used by both | — |
 
-Language is **Go** (WASM / `wasip1`). Keeper business logic is still out of scope — W1/W2 remain cron scaffolds ([#3](https://github.com/everstrat-xyz/keepers/issues/3) / [#4](https://github.com/everstrat-xyz/keepers/issues/4)) — but the report encoding they will both use is implemented and tested here.
+Language is **Go** (WASM / `wasip1`). W1 is implemented and runs in **shadow mode** (decides and cross-checks, does not write); W2 is still a scaffold ([#4](https://github.com/everstrat-xyz/keepers/issues/4)). Live `writeReport` stays off until the Sepolia cutover ([#6](https://github.com/everstrat-xyz/keepers/issues/6)).
 
 ## Prerequisites
 
@@ -142,15 +142,17 @@ Onchain registry + identity binding for live `writeReport` are covered by the Se
 
 ```text
 .
-├── project.yaml           # RPC targets (staging / production)
+├── project.yaml           # RPC targets (local / staging / production)
 ├── secrets.yaml           # Secret name → env var map
 ├── .env.example
 ├── go.mod                 # Single module for all workflows
 ├── Makefile               # make check = vet + test + wasip1 build
 ├── docs/
-│   └── envelope.md        # Envelope rules W1/W2 must obey
-├── scripts/
-│   └── gen-envelope-fixtures.sh
+│   ├── envelope.md        # Envelope rules W1/W2 must obey
+│   ├── READ_BUDGET.md     # CRE's 15-read limit and how W1/W2 fit it
+│   └── LOCAL_FORK.md      # Run a workflow against a real deployment
+├── scripts/                # Solidity-derived fixture generators
+│                           #   (cast / chisel produce the golden values)
 ├── contracts/evm/src/
 │   ├── abi/               # Vendored ABIs + Go accessors (see SOURCE.md)
 │   └── keystone/          # Keystone-related artifacts
@@ -159,9 +161,12 @@ Onchain registry + identity binding for live `writeReport` are covered by the Se
 │   ├── queue/             # W1 actions + params (no amounts)
 │   ├── strategy/          # W2 actions (action-only reports)
 │   ├── keystone/          # Workflow-identity metadata helpers
+│   ├── solmath/           # Mirrors of the contracts' Math library
+│   ├── evmread/           # CRE reads: ABI, Multicall3 batching, read budget
+│   ├── crewrite/          # DON-signed writeReport delivery
 │   ├── chains/            # Per-chain constants + config validation
 │   └── registry/          # Registry keys and role identifiers
-├── queue-keeper/          # W1 scaffold
+├── queue-keeper/          # W1 — implemented, shadow mode
 └── strategy-keeper/       # W2 scaffold
 ```
 
@@ -178,13 +183,16 @@ from each other or from `CREReceiverBase`.
 | `pkg/keystone` | Workflow name → `bytes10`, 64-byte metadata encode/decode, and a binding pre-flight check for the cutover |
 | `pkg/chains` | Chain selectors and forwarder addresses, plus `Resolve` to validate a workflow's `config.*.json` |
 | `pkg/registry` | `keccak256` Registry keys (`CONTROLLER`, `EXIT_QUEUE`, …) and role ids, so only the Registry address needs configuring |
+| `pkg/solmath` | Transcriptions of the contracts' `Math` library, so off-chain affordability matches on-chain to the wei |
+| `pkg/evmread` | CRE EVM reads with ABI packing, Multicall3 batching, and the read budget |
+| `pkg/crewrite` | DON-signed `writeReport` delivery, shared by W1/W2 |
 | `contracts/evm/src/abi` | Vendored contract ABIs, parsed on demand |
 
 **Hard constraint:** a report must never carry an authoritative ETH amount, NAV,
 or price — params are claims and hints only. The APIs above are shaped so that
 is not expressible, and unit tests reject amount-bearing params.
 
-Read [`docs/envelope.md`](docs/envelope.md) before writing W1/W2 logic: it
+Read [`docs/envelope.md`](docs/envelope.md) and [`docs/READ_BUDGET.md`](docs/READ_BUDGET.md) before writing W1/W2 logic: it
 covers the `sequence`, `observedAt` and `MAX_REPORT_AGE` rules, the
 `ProcessRequests` prefix constraint, and the identity-binding rules.
 
@@ -193,7 +201,17 @@ covers the `sequence`, `observedAt` and `MAX_REPORT_AGE` rules, the
 ```bash
 make check      # go vet + go test (host) + wasip1 build (workflows)
 make test
-make fixtures   # regenerate Solidity-derived Envelope fixtures (needs Foundry + jq)
+make fixtures   # regenerate Solidity-derived fixtures (needs Foundry + jq)
+```
+
+Unit tests cover the decision logic, but only the **local fork harness**
+exercises the EVM read path against a real deployment — see
+[`docs/LOCAL_FORK.md`](docs/LOCAL_FORK.md). It is what caught CRE's 15-read
+limit and the block-timestamp-vs-wall-clock bug; run it before trusting a change
+to `queue-keeper/reads.go`.
+
+```bash
+cre workflow simulate queue-keeper --target local-settings --non-interactive --trigger-index 0
 ```
 
 Note that `go test ./...` does **not** work from a host toolchain: the workflow
