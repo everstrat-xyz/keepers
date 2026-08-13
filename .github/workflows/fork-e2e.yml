@@ -1,0 +1,172 @@
+name: fork-e2e
+
+# Runs the workflows against a real protocol deployment on an anvil fork of
+# Sepolia — the only thing that exercises the EVM read path end to end before
+# the cutover. See docs/LOCAL_FORK.md.
+#
+# Deliberately NOT on every PR:
+#   - it deploys from everstrat-xyz/contracts, so a green run depends on that
+#     repo's state as much as this one's
+#   - it forks from a public RPC, which rate-limits
+#
+# A job that fails for reasons outside the PR trains people to ignore red, so
+# this is scheduled and manually dispatchable instead. Run it before merging
+# anything that touches a reads.go.
+
+on:
+  workflow_dispatch:
+    inputs:
+      contracts_ref:
+        description: "everstrat-xyz/contracts ref to deploy"
+        required: false
+        default: "feat/cre-keeper-executors"
+  schedule:
+    # 06:00 UTC daily.
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25.3"
+  CRE_CLI_VERSION: v1.29.0
+  SEPOLIA_RPC: https://ethereum-sepolia-rpc.publicnode.com
+
+jobs:
+  fork:
+    name: simulate against a forked deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: keepers
+
+      - uses: actions/checkout@v4
+        with:
+          repository: everstrat-xyz/contracts
+          ref: ${{ inputs.contracts_ref || 'feat/cre-keeper-executors' }}
+          submodules: recursive
+          path: contracts
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install CRE CLI
+        run: |
+          set -euo pipefail
+          curl -sSL "https://github.com/smartcontractkit/cre-cli/releases/download/${CRE_CLI_VERSION}/cre_linux_amd64.tar.gz" \
+            -o /tmp/cre.tar.gz
+          tar -xzf /tmp/cre.tar.gz -C /tmp
+          BIN="$(find /tmp -maxdepth 1 -type f -name 'cre*' | head -n1)"
+          sudo mv "$BIN" /usr/local/bin/cre
+          sudo chmod +x /usr/local/bin/cre
+
+      # Fork near head: public RPCs prune state, and an older fork block fails
+      # the moment anvil lazily fetches an account it has not seen — including
+      # Multicall3, which every batched read goes through.
+      - name: Start anvil forked from Sepolia
+        run: |
+          set -euo pipefail
+          BN=$(cast block-number --rpc-url "${SEPOLIA_RPC}")
+          echo "forking at $((BN-5))"
+          anvil --fork-url "${SEPOLIA_RPC}" --fork-block-number $((BN-5)) \
+                --port 8545 --silent > /tmp/anvil.log 2>&1 &
+          for i in $(seq 1 30); do
+            cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1 && break
+            sleep 2
+          done
+          cast chain-id --rpc-url http://127.0.0.1:8545
+          size=$(cast codesize 0xcA11bde05977b3631167028862bE2a173976CA11 --rpc-url http://127.0.0.1:8545)
+          echo "Multicall3 codesize: $size"
+          [ "$size" != "0" ] || { echo "::error::Multicall3 unreachable on the fork"; exit 1; }
+
+      - name: Deploy the protocol
+        working-directory: contracts
+        env:
+          PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+          PRICE_FEED: "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+          WETH_ADDRESS: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14"
+          DAO_ADDRESS: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+          SECURITY_ADDRESS: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+          DAO_TREASURY_ADDRESS: "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+          WHITELIST_SIGNER_ADDRESS: "0x0000000000000000000000000000000000000000"
+          EXIT_LIQUIDITY_TARGET_ETH: "1000000000000000000"
+          CONTROLLER_RESERVE_ETH: "100000000000000000"
+          PERFORMANCE_FEE_BPS: "1000"
+          KEYSTONE_FORWARDER: "0xF8344CFd5c43616a4366C34E3EEE75af79a74482"
+          CHAIN_SELECTOR: "16015286601757825753"
+          MAX_REPORT_AGE: "3600"
+        run: |
+          set -euo pipefail
+          forge build
+          forge script script/DeployAll.s.sol:DeployAll \
+            --rpc-url http://127.0.0.1:8545 --broadcast --slow
+
+      # The deploy is deterministic (fixed key and nonce sequence), so
+      # config.local.json's addresses must still be the ones just deployed.
+      # If this fails, the deploy script changed and the configs are stale.
+      - name: Verify the committed fork addresses
+        working-directory: keepers
+        run: |
+          set -euo pipefail
+          REG=$(jq -r .registryAddress queue-keeper/config.local.json)
+          size=$(cast codesize "$REG" --rpc-url http://127.0.0.1:8545)
+          echo "registry $REG codesize: $size"
+          if [ "$size" = "0" ]; then
+            echo "::error::config.local.json points at $REG but nothing is deployed there — the deploy is no longer deterministic, so refresh docs/LOCAL_FORK.md and the local configs"
+            exit 1
+          fi
+
+      - name: Verify the vendored ABIs against this build
+        working-directory: keepers
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in ICREReceiverBase ICREQueueExecutor ICREStrategyExecutor \
+                   IRegistry IController IExitQueue IAMM IStrategyManager IStrategy IOracle; do
+            jq -S '.abi' "../contracts/out/$f.sol/$f.json" > "/tmp/$f.json"
+            if ! diff -q "/tmp/$f.json" "contracts/evm/src/abi/$f.json" >/dev/null; then
+              echo "::error::$f.json is stale — refresh it per contracts/evm/src/abi/SOURCE.md"
+              fail=1
+            fi
+          done
+          [ "$fail" = "0" ]
+
+      - name: Simulate all workflows against the deployment
+        working-directory: keepers
+        env:
+          GOTOOLCHAIN: go${{ env.GO_VERSION }}
+        run: |
+          set -euo pipefail
+          go mod download
+          for wf in queue-keeper strategy-keeper freeze-watch; do
+            echo "::group::simulate $wf"
+            cre workflow simulate "$wf" --target local-settings --non-interactive --trigger-index 0 \
+              2>&1 | tee "/tmp/$wf.log"
+            echo "::endgroup::"
+          done
+
+      # A divergence between a workflow and the contract's own view is the
+      # signal shadow mode exists to produce; in CI it means a real regression.
+      - name: Fail on an unexplained divergence
+        working-directory: keepers
+        run: |
+          set -euo pipefail
+          if grep -h "divergence=bug" /tmp/*.log; then
+            echo "::error::a workflow disagreed with the on-chain view in a way the scan window does not explain"
+            exit 1
+          fi
+          echo "no unexplained divergences"
+
+      - name: Upload simulation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-logs
+          path: |
+            /tmp/*.log
+          retention-days: 7

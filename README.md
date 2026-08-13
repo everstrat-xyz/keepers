@@ -226,8 +226,15 @@ linux/darwin. Use `./pkg/... ./contracts/...`, as the Makefile and CI do.
 
 GitHub Actions (`.github/workflows/ci.yml`):
 
-1. **Always:** module tidy check, `go vet` + `go test` on the host packages (`./pkg/...`, `./contracts/...`), `gofmt`, and a `wasip1` vet + build of both workflows.
-2. **Simulate:** `cre workflow simulate` for `queue-keeper` and `strategy-keeper`, gated on `CRE_ETH_PRIVATE_KEY` (and optional `CRE_API_KEY`) so PRs without secrets still get compile/vet signal.
+1. **`vet / test / lint`** — module tidy check, `go vet` + `go test -race` on the host packages, a `wasip1` vet + build of all three workflows, a compressed-size check against CRE's 20 MB limit, and `gofmt`.
+2. **`golangci-lint`** — host packages, then a second pass with `GOOS=wasip1` so the workflow mains (the keeper logic most worth linting) are covered at all.
+3. **`cre workflow simulate`** — all three workflows against `staging-settings`, on **every** PR. No secret gate: `cre workflow simulate` falls back to a default key, so the previous gate on `CRE_ETH_PRIVATE_KEY` made the job report success while doing nothing.
+
+`SEPOLIA_RPC_URL` is the only optional secret, and only to avoid public-RPC rate limits.
+
+### fork-e2e (scheduled / manual)
+
+`.github/workflows/fork-e2e.yml` deploys the protocol to an anvil Sepolia fork and runs every workflow against it, failing on `divergence=bug` or a stale vendored ABI. It is **not** on PRs: it deploys from `everstrat-xyz/contracts`, so it can go red for reasons outside the PR, and a job that does that trains people to ignore red. Run it via `workflow_dispatch` before merging anything that touches a `reads.go`.
 
 Full simulate/lint matrix expansion: [issue #8](https://github.com/everstrat-xyz/keepers/issues/8).
 

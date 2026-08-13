@@ -4,7 +4,7 @@
 HOST_PKGS := ./pkg/... ./contracts/...
 WASM_PKGS := ./queue-keeper/ ./strategy-keeper/ ./freeze-watch/
 
-.PHONY: tidy fmt vet test build check fixtures simulate-queue simulate-strategy simulate-freeze-watch simulate supported-chains
+.PHONY: tidy fmt vet lint test build check fixtures simulate-queue simulate-strategy simulate-freeze-watch simulate supported-chains
 
 tidy:
 	go mod tidy
@@ -16,6 +16,12 @@ vet:
 	go vet $(HOST_PKGS)
 	GOOS=wasip1 GOARCH=wasm go vet $(WASM_PKGS)
 
+# Requires golangci-lint v2 (v1 refuses a go1.25 module).
+# go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+lint:
+	golangci-lint run $(HOST_PKGS)
+	GOOS=wasip1 GOARCH=wasm golangci-lint run ./queue-keeper/... ./strategy-keeper/... ./freeze-watch/...
+
 test:
 	go test $(HOST_PKGS)
 
@@ -25,7 +31,7 @@ build:
 	GOOS=wasip1 GOARCH=wasm go build -o /tmp/freeze-watch.wasm ./freeze-watch/
 
 # What CI runs.
-check: vet test build
+check: vet lint test build
 
 # Regenerate the Solidity-derived Envelope fixtures. Requires Foundry + jq.
 fixtures:

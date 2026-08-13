@@ -254,14 +254,16 @@ func readOracle(
 	if err != nil {
 		// An Oracle that cannot be read is itself worth knowing about, but it
 		// is not an alert this function can raise without inventing a feed.
-		return nil
+		// Deliberately swallowed: a monitor that fails its tick on one bad read
+		// goes silent exactly when things are going wrong.
+		return nil //nolint:nilerr // partial reads are tolerated by design
 	}
 	if len(vals) != 1 {
 		return nil
 	}
 	tokens, err := evmread.Addresses(vals[0], "getSupportedTokens")
 	if err != nil || len(tokens) == 0 {
-		return nil
+		return nil //nolint:nilerr // partial reads are tolerated by design
 	}
 
 	calls := make([]evmread.SubCall, 0, len(tokens))
@@ -280,7 +282,7 @@ func readOracle(
 		// condition being watched, and must not abort the whole read.
 		results, err := c.Aggregate(chunk, true).Await()
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // partial reads are tolerated by design
 		}
 		for i, r := range results {
 			tok := tokens[done+i]
@@ -345,7 +347,10 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 			}
 		}
 		if results[2].Success {
-			k.Paused, _ = boolResult(results[2], "receiver.paused")
+			paused, err := boolResult(results[2], "receiver.paused")
+			if err == nil {
+				k.Paused = paused
+			}
 		}
 		if results[3].Success && len(results[3].Values) > 0 {
 			if action, ok := results[3].Values[0].(uint8); ok {

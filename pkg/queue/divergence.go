@@ -75,7 +75,7 @@ func Classify(decision Decision, onChain UpkeepStatus, s State) Divergence {
 	windowEnd := s.OnChainScanWindowEnd()
 
 	switch {
-	case decision.Action == onChain.Action && decision.Action == ActionNone:
+	case decision.Action == ActionNone && onChain.Action == ActionNone:
 		d.Class = DivergenceMatch
 		d.Explanation = "both agree there is no upkeep"
 

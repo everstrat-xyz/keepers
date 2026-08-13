@@ -9,47 +9,93 @@ on:
 permissions:
   contents: read
 
+env:
+  GO_VERSION: "1.25.3"
+  CRE_CLI_VERSION: v1.29.0
+
 jobs:
   go:
-    name: go vet / tidy
+    name: vet / test / lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.3"
+          go-version: ${{ env.GO_VERSION }}
 
-      - name: Download modules
-        run: go mod download
-
-      - name: Ensure go.sum is tidy
+      - name: Ensure go.mod / go.sum are tidy
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      # The workflow mains are //go:build wasip1, so `./...` excludes all their
-      # files on linux and `go vet`/`go test` fail with "build constraints
+      # The workflow mains are //go:build wasip1, so `./...` on a linux
+      # toolchain excludes every file in them and fails with "build constraints
       # exclude all Go files". Host packages are addressed explicitly; the
-      # workflows get their own wasip1 build step below.
+      # workflows get their own wasip1 steps.
       - name: go vet (host packages)
         run: go vet ./pkg/... ./contracts/...
 
       - name: go test (host packages)
-        run: go test ./pkg/... ./contracts/...
+        run: go test -race ./pkg/... ./contracts/...
 
-      - name: wasip1 vet + build scaffolds
+      - name: wasip1 vet + build (workflows)
         run: |
-          GOOS=wasip1 GOARCH=wasm go vet ./queue-keeper/ ./strategy-keeper/
+          GOOS=wasip1 GOARCH=wasm go vet ./queue-keeper/ ./strategy-keeper/ ./freeze-watch/
           GOOS=wasip1 GOARCH=wasm go build -o /tmp/queue-keeper.wasm ./queue-keeper/
           GOOS=wasip1 GOARCH=wasm go build -o /tmp/strategy-keeper.wasm ./strategy-keeper/
+          GOOS=wasip1 GOARCH=wasm go build -o /tmp/freeze-watch.wasm ./freeze-watch/
+
+      # CRE rejects a workflow over 20mb compressed (WASMCompressedBinarySizeLimit).
+      # Deploy is the wrong place to discover a binary has outgrown it.
+      - name: Check WASM size against the CRE limit
+        run: |
+          set -euo pipefail
+          limit=$((20 * 1024 * 1024))
+          for f in /tmp/*.wasm; do
+            raw=$(stat -c%s "$f")
+            gz=$(gzip -9 -c "$f" | wc -c)
+            printf '%s: %s raw, %s gzipped\n' "$(basename "$f")" "$raw" "$gz"
+            if [ "$gz" -gt "$limit" ]; then
+              echo "::error::$(basename "$f") is ${gz} bytes compressed, over the ${limit} byte CRE limit"
+              exit 1
+            fi
+          done
 
       - name: gofmt
         run: |
-          unformatted="$(gofmt -l pkg contracts queue-keeper strategy-keeper)"
+          unformatted="$(gofmt -l pkg contracts queue-keeper strategy-keeper freeze-watch)"
           if [ -n "$unformatted" ]; then
-            echo "gofmt needed:"; echo "$unformatted"; exit 1
+            echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
           fi
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Lint host packages
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62.2
+          args: --timeout=5m ./pkg/... ./contracts/...
+
+      # The workflow mains only compile under wasip1, so they need a second
+      # pass with the build target set. Without this the keeper logic — the
+      # part most worth linting — is never linted at all.
+      - name: Lint workflows (wasip1)
+        uses: golangci/golangci-lint-action@v6
+        env:
+          GOOS: wasip1
+          GOARCH: wasm
+        with:
+          version: v1.62.2
+          args: --timeout=5m ./queue-keeper/... ./strategy-keeper/... ./freeze-watch/...
 
   simulate:
     name: cre workflow simulate
@@ -58,28 +104,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Decide whether to simulate
-        id: gate
-        env:
-          # Do not use secrets in job-level `if` (GitHub rejects the workflow).
-          CRE_ETH_PRIVATE_KEY: ${{ secrets.CRE_ETH_PRIVATE_KEY }}
-        run: |
-          if [ -z "${CRE_ETH_PRIVATE_KEY}" ]; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "CRE_ETH_PRIVATE_KEY unset — skipping simulate (expected until org secrets are wired)."
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-go@v5
-        if: steps.gate.outputs.run == 'true'
         with:
-          go-version: "1.25.3"
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Install CRE CLI
-        if: steps.gate.outputs.run == 'true'
-        env:
-          CRE_CLI_VERSION: v1.29.0
         run: |
           set -euo pipefail
           curl -sSL "https://github.com/smartcontractkit/cre-cli/releases/download/${CRE_CLI_VERSION}/cre_linux_amd64.tar.gz" \
@@ -90,15 +119,23 @@ jobs:
           sudo chmod +x /usr/local/bin/cre
           cre version
 
-      - name: Simulate scaffolds
-        if: steps.gate.outputs.run == 'true'
+      # No secret gate. `cre workflow simulate` falls back to a default key for
+      # chain-write simulation, so this runs on every PR including forks. The
+      # previous gate on CRE_ETH_PRIVATE_KEY made the job report success while
+      # doing nothing, which is worse than no job at all.
+      #
+      # SEPOLIA_RPC_URL is optional: project.yaml's staging target defaults to a
+      # public endpoint. Set the secret to avoid public-RPC rate limits.
+      - name: Simulate all workflows
         env:
-          CRE_ETH_PRIVATE_KEY: ${{ secrets.CRE_ETH_PRIVATE_KEY }}
-          CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
           SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          GOTOOLCHAIN: go${{ env.GO_VERSION }}
         run: |
           set -euo pipefail
           export SEPOLIA_RPC_URL="${SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}"
           go mod download
-          cre workflow simulate queue-keeper --target staging-settings --non-interactive --trigger-index 0
-          cre workflow simulate strategy-keeper --target staging-settings --non-interactive --trigger-index 0
+          for wf in queue-keeper strategy-keeper freeze-watch; do
+            echo "::group::simulate $wf"
+            cre workflow simulate "$wf" --target staging-settings --non-interactive --trigger-index 0
+            echo "::endgroup::"
+          done
