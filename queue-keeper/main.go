@@ -89,7 +89,7 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 	if err != nil {
 		return nil, err
 	}
-	addrs, rc := pre.addrs, pre.receiver
+	rc := pre.receiver
 
 	// The receiver's immutable is the authority; config is a mirror that can
 	// drift across a redeploy (docs/envelope.md).
@@ -146,11 +146,14 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		Message:      decision.Reason,
 	}
 
-	logger.Info("W1 queue-keeper tick",
+	// The address book is logged whole: when a divergence has to be triaged,
+	// "which deployment was this tick actually talking to" is the first
+	// question, and config only names the Registry.
+	tickAttrs := append([]any{
 		"chainName", deployment.Chain.Name,
 		"queueExecutor", deployment.Receiver.Hex(),
-		"controller", addrs.Controller.Hex(),
-		"exitQueue", addrs.ExitQueue.Hex(),
+	}, pre.protocol.LogAttrs()...)
+	logger.Info("W1 queue-keeper tick", append(tickAttrs,
 		"action", decision.Action.String(),
 		"batchId", decision.BatchID,
 		"endIndex", decision.EndIndex,
@@ -163,7 +166,7 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		"scanTruncated", state.ScanTruncated(),
 		"readsRemaining", budget.Remaining(),
 		"shadowMode", deployment.ShadowMode,
-	)
+	)...)
 
 	if decision.Action == queue.ActionNone {
 		return result, nil

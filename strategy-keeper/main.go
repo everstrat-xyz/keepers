@@ -113,11 +113,11 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		Message:       decision.Reason,
 	}
 
-	logger.Info("W2 strategy-keeper tick",
+	tickAttrs := append([]any{
 		"chainName", deployment.Chain.Name,
 		"strategyExecutor", deployment.Receiver.Hex(),
-		"controller", pre.addrs.Controller.Hex(),
-		"strategyManager", pre.addrs.StrategyManager.Hex(),
+	}, pre.protocol.LogAttrs()...)
+	logger.Info("W2 strategy-keeper tick", append(tickAttrs,
 		"action", decision.Action.String(),
 		// Diagnostic only — the report carries no amount.
 		"amount", decision.Amount.String(),
@@ -130,7 +130,7 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		"scanTruncated", state.ScanTruncated,
 		"readsRemaining", budget.Remaining(),
 		"shadowMode", deployment.ShadowMode,
-	)
+	)...)
 
 	if decision.Action == strategy.ActionNone {
 		return result, nil
