@@ -58,12 +58,21 @@ jobs:
       - name: Install CRE CLI
         run: |
           set -euo pipefail
-          curl -sSL "https://github.com/smartcontractkit/cre-cli/releases/download/${CRE_CLI_VERSION}/cre_linux_amd64.tar.gz" \
+          # Extract into a dedicated directory. The release tarball holds a
+          # single file named cre_<version>_linux_amd64, and globbing 'cre*'
+          # straight out of /tmp also matched cre.tar.gz — which is what got
+          # installed as the binary ("Exec format error").
+          mkdir -p /tmp/cre-dist
+          curl -fsSL "https://github.com/smartcontractkit/cre-cli/releases/download/${CRE_CLI_VERSION}/cre_linux_amd64.tar.gz" \
             -o /tmp/cre.tar.gz
-          tar -xzf /tmp/cre.tar.gz -C /tmp
-          BIN="$(find /tmp -maxdepth 1 -type f -name 'cre*' | head -n1)"
-          sudo mv "$BIN" /usr/local/bin/cre
-          sudo chmod +x /usr/local/bin/cre
+          tar -xzf /tmp/cre.tar.gz -C /tmp/cre-dist
+          BIN="$(find /tmp/cre-dist -type f -name 'cre_*' | head -n1)"
+          if [ -z "$BIN" ]; then
+            echo "::error::no cre binary found in the ${CRE_CLI_VERSION} release tarball"
+            ls -la /tmp/cre-dist
+            exit 1
+          fi
+          sudo install -m 0755 "$BIN" /usr/local/bin/cre
 
       # Fork near head: public RPCs prune state, and an older fork block fails
       # the moment anvil lazily fetches an account it has not seen — including
