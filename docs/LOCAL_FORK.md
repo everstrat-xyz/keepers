@@ -163,6 +163,41 @@ Each row was confirmed with W1 deriving the action independently from raw
 | Batch priced, Controller funded | `ProcessRequests(1, 1)` | `ProcessRequests(1, 1)` | `match` |
 | Batch priced, Controller drained | `None` | `None` | `match` |
 
+## W2 states
+
+`DeployAll` is core-only — it registers **no strategies** — so Rebalance,
+DepositExcess, Harvest and Sync are all unreachable on a bare fork. Exit
+liquidity is reachable by funding the Controller:
+
+```bash
+CTRL=0xcF263eed76C5E827E839fEE93043D5c0e79BbB68
+cast rpc anvil_setBalance $CTRL 0x4563918244F40000 --rpc-url $R   # 5 ETH
+cre workflow simulate strategy-keeper --target local-settings --non-interactive --trigger-index 0
+```
+
+Pause the Controller to check the short-circuit (SECURITY_ROLE):
+
+```bash
+SEC=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+cast rpc anvil_impersonateAccount $SEC --rpc-url $R
+cast rpc anvil_setBalance $SEC 0xde0b6b3a7640000 --rpc-url $R
+cast send $CTRL "pause()" --from $SEC --unlocked --rpc-url $R
+```
+
+| Protocol state | On-chain view | W2 | Divergence |
+| --- | --- | --- | --- |
+| Controller empty, float at 0 | `None` | `None` | `match` |
+| Controller funded, float below target | `ProvideExitLiquidity(1 ETH)` | `ProvideExitLiquidity(1 ETH)` | `match` |
+| Controller paused | `None` | `None` | `match` |
+
+In the funded case W2's independent `_pendingRedemptionNeedsETH` reproduction
+agreed with the contract's `pendingRedemptionNeedsETH()` **to the wei**
+(999999999999999999), which is the strongest available check on the redemption
+cost model.
+
+Registering a strategy would exercise the remaining branches; that needs
+`DeployUniCLStrat` plus a timelocked `addStrategy`, and is not covered here.
+
 ## Read budget
 
 Every tick logs `readsRemaining`. W1's plan leaves 5–8 of 15 reads spare on a

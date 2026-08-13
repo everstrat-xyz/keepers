@@ -27,7 +27,8 @@ local edit silently desynchronises W1/W2 from the deployed receivers.
 | `IController.json` | Controller balance / pause state cross-checks |
 | `IExitQueue.json` | Off-chain full-queue scan: `currentBatchId`, `batchInfo`, `unprocessedUsers*`, `requestInfo`, `MAX_BATCH_PROCESSING_TIME` |
 | `IAMM.json` | Pause state and exit-liquidity reads |
-| `IStrategyManager.json` | Rebalance / deposit-capacity / performance-fee reads |
+| `IStrategyManager.json` | Strategy list, deposit cooldown, performance-fee reads |
+| `IStrategy.json` | Per-strategy health, pause, max deposit/withdrawal — what W2's priority order turns on |
 
 ## Refreshing
 
@@ -36,7 +37,7 @@ CONTRACTS=../contracts   # path to a clean everstrat-xyz/contracts checkout
 (cd "$CONTRACTS" && forge build)
 
 for f in ICREReceiverBase ICREQueueExecutor ICREStrategyExecutor \
-         IRegistry IController IExitQueue IAMM IStrategyManager; do
+         IRegistry IController IExitQueue IAMM IStrategyManager IStrategy; do
   jq -S '.abi' "$CONTRACTS/out/$f.sol/$f.json" > "contracts/evm/src/abi/$f.json"
 done
 
@@ -44,6 +45,18 @@ go test ./...   # envelope/params fixtures must still pass
 ```
 
 Then update the commit hash in the table above in the same PR.
+
+## Hand-written fragments
+
+`Pausable.json` and `Multicall3.json` are **not** vendored from EverStrat's
+build and are not covered by the refresh above:
+
+- `Pausable.json` — OpenZeppelin's `paused()`. The EverStrat interfaces inherit
+  Pausable without re-declaring it, so it appears in no forge artifact, yet both
+  `*UpkeepStatus` views gate on it.
+- `Multicall3.json` — the canonical aggregator's `aggregate3`. CRE caps a
+  workflow at 15 contract reads per execution, so batched reads are the only way
+  to scan anything; see [`docs/READ_BUDGET.md`](../../../../docs/READ_BUDGET.md).
 
 ## Typed bindings
 
