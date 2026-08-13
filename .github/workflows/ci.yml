@@ -112,7 +112,38 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # `cre workflow simulate` requires authentication: without a login or
+      # CRE_API_KEY it exits 1 with "Authentication required". It does NOT need
+      # CRE_ETH_PRIVATE_KEY — the CLI falls back to a default key for
+      # chain-write simulation — so the original gate watched the wrong secret
+      # and skipped forever.
+      #
+      # A skip here is reported as a warning annotation and written to the run
+      # summary. That is the whole point: the previous gate reported success
+      # while doing nothing, which hid both missing coverage and a broken CLI
+      # install. Silence is not the same as green.
+      - name: Check for CRE credentials
+        id: creds
+        env:
+          CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
+        run: |
+          if [ -z "${CRE_API_KEY}" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Simulate skipped::CRE_API_KEY is not set, so cre workflow simulate did not run. This job is NOT verifying the workflows."
+            {
+              echo "### :warning: \`cre workflow simulate\` skipped"
+              echo
+              echo "\`CRE_API_KEY\` is not set in repository secrets, and the CRE CLI refuses to"
+              echo "simulate unauthenticated. **The workflows were not simulated in this run.**"
+              echo
+              echo "Add \`CRE_API_KEY\` (Organization → APIs in the CRE UI) to enable it."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install CRE CLI
+        if: steps.creds.outputs.run == 'true'
         run: |
           set -euo pipefail
           # Extract into a dedicated directory. The release tarball holds a
@@ -132,15 +163,10 @@ jobs:
           sudo install -m 0755 "$BIN" /usr/local/bin/cre
           cre version
 
-      # No secret gate. `cre workflow simulate` falls back to a default key for
-      # chain-write simulation, so this runs on every PR including forks. The
-      # previous gate on CRE_ETH_PRIVATE_KEY made the job report success while
-      # doing nothing, which is worse than no job at all.
-      #
-      # SEPOLIA_RPC_URL is optional: project.yaml's staging target defaults to a
-      # public endpoint. Set the secret to avoid public-RPC rate limits.
       - name: Simulate all workflows
+        if: steps.creds.outputs.run == 'true'
         env:
+          CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
           SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           GOTOOLCHAIN: go${{ env.GO_VERSION }}
         run: |
@@ -152,3 +178,4 @@ jobs:
             cre workflow simulate "$wf" --target staging-settings --non-interactive --trigger-index 0
             echo "::endgroup::"
           done
+          echo "### :white_check_mark: Simulated queue-keeper, strategy-keeper, freeze-watch" >> "$GITHUB_STEP_SUMMARY"

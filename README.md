@@ -228,9 +228,15 @@ GitHub Actions (`.github/workflows/ci.yml`):
 
 1. **`vet / test / lint`** — module tidy check, `go vet` + `go test -race` on the host packages, a `wasip1` vet + build of all three workflows, a compressed-size check against CRE's 20 MB limit, and `gofmt`.
 2. **`golangci-lint`** — host packages, then a second pass with `GOOS=wasip1` so the workflow mains (the keeper logic most worth linting) are covered at all. Requires **v2**: v1 refuses to run when built with an older Go than the module targets, and v2 binaries need `golangci-lint-action@v7` or newer.
-3. **`cre workflow simulate`** — all three workflows against `staging-settings`, on **every** PR. No secret gate: `cre workflow simulate` falls back to a default key, so the previous gate on `CRE_ETH_PRIVATE_KEY` made the job report success while doing nothing.
+3. **`cre workflow simulate`** — all three workflows against `staging-settings`, gated on `CRE_API_KEY`.
 
-`SEPOLIA_RPC_URL` is the only optional secret, and only to avoid public-RPC rate limits.
+| Secret | Needed for | If unset |
+| --- | --- | --- |
+| `CRE_API_KEY` | `cre workflow simulate` (the CLI refuses to run unauthenticated) | simulate skips with a **warning annotation and a run-summary note** |
+| `SEPOLIA_RPC_URL` | avoiding public-RPC rate limits | falls back to a public endpoint |
+| ~~`CRE_ETH_PRIVATE_KEY`~~ | nothing | the CLI uses a default key for chain-write simulation |
+
+The original gate watched `CRE_ETH_PRIVATE_KEY` — the wrong secret — and skipped **silently**, so the job reported success while doing nothing. That hid two real bugs at once: no simulate coverage, and a CRE CLI install that had been installing the release tarball as the binary since the scaffold. A skipped job now says so loudly; silence is not the same as green.
 
 ### fork-e2e (scheduled / manual)
 

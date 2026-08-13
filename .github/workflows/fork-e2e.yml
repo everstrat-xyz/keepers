@@ -55,7 +55,24 @@ jobs:
 
       - uses: foundry-rs/foundry-toolchain@v1
 
+      # Same auth requirement as ci.yml. This job is scheduled, and a nightly
+      # failure for a missing secret is exactly the kind of red people learn to
+      # ignore — so it skips loudly instead.
+      - name: Check for CRE credentials
+        id: creds
+        env:
+          CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
+        run: |
+          if [ -z "${CRE_API_KEY}" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Fork e2e skipped::CRE_API_KEY is not set, so no workflow was simulated against the fork."
+            echo "### :warning: fork-e2e skipped — \`CRE_API_KEY\` not set" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install CRE CLI
+        if: steps.creds.outputs.run == 'true'
         run: |
           set -euo pipefail
           # Extract into a dedicated directory. The release tarball holds a
@@ -78,6 +95,7 @@ jobs:
       # the moment anvil lazily fetches an account it has not seen — including
       # Multicall3, which every batched read goes through.
       - name: Start anvil forked from Sepolia
+        if: steps.creds.outputs.run == 'true'
         run: |
           set -euo pipefail
           BN=$(cast block-number --rpc-url "${SEPOLIA_RPC}")
@@ -94,6 +112,7 @@ jobs:
           [ "$size" != "0" ] || { echo "::error::Multicall3 unreachable on the fork"; exit 1; }
 
       - name: Deploy the protocol
+        if: steps.creds.outputs.run == 'true'
         working-directory: contracts
         env:
           PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -119,6 +138,7 @@ jobs:
       # config.local.json's addresses must still be the ones just deployed.
       # If this fails, the deploy script changed and the configs are stale.
       - name: Verify the committed fork addresses
+        if: steps.creds.outputs.run == 'true'
         working-directory: keepers
         run: |
           set -euo pipefail
@@ -131,6 +151,7 @@ jobs:
           fi
 
       - name: Verify the vendored ABIs against this build
+        if: steps.creds.outputs.run == 'true'
         working-directory: keepers
         run: |
           set -euo pipefail
@@ -146,8 +167,10 @@ jobs:
           [ "$fail" = "0" ]
 
       - name: Simulate all workflows against the deployment
+        if: steps.creds.outputs.run == 'true'
         working-directory: keepers
         env:
+          CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
           GOTOOLCHAIN: go${{ env.GO_VERSION }}
         run: |
           set -euo pipefail
@@ -162,6 +185,7 @@ jobs:
       # A divergence between a workflow and the contract's own view is the
       # signal shadow mode exists to produce; in CI it means a real regression.
       - name: Fail on an unexplained divergence
+        if: steps.creds.outputs.run == 'true'
         working-directory: keepers
         run: |
           set -euo pipefail
