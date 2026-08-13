@@ -29,6 +29,7 @@ local edit silently desynchronises W1/W2 from the deployed receivers.
 | `IAMM.json` | Pause state and exit-liquidity reads |
 | `IStrategyManager.json` | Strategy list, deposit cooldown, performance-fee reads |
 | `IStrategy.json` | Per-strategy health, pause, max deposit/withdrawal — what W2's priority order turns on |
+| `IOracle.json` | Feed freshness — the Registry address book binds it to the `ORACLE` key |
 
 ## Refreshing
 
@@ -37,7 +38,7 @@ CONTRACTS=../contracts   # path to a clean everstrat-xyz/contracts checkout
 (cd "$CONTRACTS" && forge build)
 
 for f in ICREReceiverBase ICREQueueExecutor ICREStrategyExecutor \
-         IRegistry IController IExitQueue IAMM IStrategyManager IStrategy; do
+         IRegistry IController IExitQueue IAMM IStrategyManager IStrategy IOracle; do
   jq -S '.abi' "$CONTRACTS/out/$f.sol/$f.json" > "contracts/evm/src/abi/$f.json"
 done
 
