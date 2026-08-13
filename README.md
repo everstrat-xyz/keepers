@@ -8,7 +8,7 @@ Go workflows for the [Chainlink Runtime Environment (CRE)](https://docs.chain.li
 | `strategy-keeper/` | W2 — strategy automation | `CREStrategyExecutor` |
 | `pkg/` | Shared Envelope / report / chain-config code used by both | — |
 
-Language is **Go** (WASM / `wasip1`). W1 is implemented and runs in **shadow mode** (decides and cross-checks, does not write); W2 is still a scaffold ([#4](https://github.com/everstrat-xyz/keepers/issues/4)). Live `writeReport` stays off until the Sepolia cutover ([#6](https://github.com/everstrat-xyz/keepers/issues/6)).
+Language is **Go** (WASM / `wasip1`). W1 and W2 are both implemented and run in **shadow mode** — they decide an action each tick and cross-check it against the on-chain view, but do not write. Live `writeReport` stays off until the Sepolia cutover ([#6](https://github.com/everstrat-xyz/keepers/issues/6)).
 
 ## Prerequisites
 
@@ -167,7 +167,7 @@ Onchain registry + identity binding for live `writeReport` are covered by the Se
 │   ├── chains/            # Per-chain constants + config validation
 │   └── registry/          # Registry keys and role identifiers
 ├── queue-keeper/          # W1 — implemented, shadow mode
-└── strategy-keeper/       # W2 scaffold
+└── strategy-keeper/       # W2 — implemented, shadow mode
 ```
 
 ## Shared packages
@@ -178,8 +178,8 @@ from each other or from `CREReceiverBase`.
 | Package | What it gives you |
 | --- | --- |
 | `pkg/envelope` | `abi.encode(Envelope)` codec, plus `Validate` / `NextSequence` / `Deadline` mirroring the receiver's chain, replay and staleness guards |
-| `pkg/queue` | `QueueAction` ordinals, params encoders, and `Report.PriceBatch` / `ProcessRequests` / `AdvanceCursor` |
-| `pkg/strategy` | `StrategyAction` ordinals, the `strategyUpkeepStatus` priority order, and action-only `Report.Build` |
+| `pkg/queue` | W1's decision engine: affordability model, cursor logic, params encoders, divergence classification |
+| `pkg/strategy` | W2's decision engine: priority order, redemption cost model, action-only `Report.Build` |
 | `pkg/keystone` | Workflow name → `bytes10`, 64-byte metadata encode/decode, and a binding pre-flight check for the cutover |
 | `pkg/chains` | Chain selectors and forwarder addresses, plus `Resolve` to validate a workflow's `config.*.json` |
 | `pkg/registry` | `keccak256` Registry keys (`CONTROLLER`, `EXIT_QUEUE`, …) and role ids, so only the Registry address needs configuring |
