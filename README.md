@@ -6,6 +6,7 @@ Go workflows for the [Chainlink Runtime Environment (CRE)](https://docs.chain.li
 | --- | --- | --- |
 | `queue-keeper/` | W1 — exit-queue automation | `CREQueueExecutor` |
 | `strategy-keeper/` | W2 — strategy automation | `CREStrategyExecutor` |
+| `freeze-watch/` | W4 — freeze precursors and keeper health (read-only) | — |
 | `pkg/` | Shared Envelope / report / chain-config code used by both | — |
 
 Language is **Go** (WASM / `wasip1`). W1 and W2 are both implemented and run in **shadow mode** — they decide an action each tick and cross-check it against the on-chain view, but do not write. Live `writeReport` stays off until the Sepolia cutover ([#6](https://github.com/everstrat-xyz/keepers/issues/6)).
@@ -165,9 +166,11 @@ Onchain registry + identity binding for live `writeReport` are covered by the Se
 │   ├── evmread/           # CRE reads: ABI, Multicall3 batching, read budget
 │   ├── crewrite/          # DON-signed writeReport delivery
 │   ├── chains/            # Per-chain constants + config validation
-│   └── registry/          # Registry keys and role identifiers
+│   ├── registry/          # Registry keys and role identifiers
+│   └── freezewatch/       # W4 alert thresholds and payloads
 ├── queue-keeper/          # W1 — implemented, shadow mode
-└── strategy-keeper/       # W2 — implemented, shadow mode
+├── strategy-keeper/       # W2 — implemented, shadow mode
+└── freeze-watch/          # W4 — observability only, no writes
 ```
 
 ## Shared packages
@@ -186,6 +189,7 @@ from each other or from `CREReceiverBase`.
 | `pkg/solmath` | Transcriptions of the contracts' `Math` library, so off-chain affordability matches on-chain to the wei |
 | `pkg/evmread` | CRE EVM reads with ABI packing, Multicall3 batching, and the read budget |
 | `pkg/crewrite` | DON-signed `writeReport` delivery, shared by W1/W2 |
+| `pkg/freezewatch` | W4's alert evaluation — pure thresholds in, alerts out |
 | `contracts/evm/src/abi` | Vendored contract ABIs, parsed on demand |
 
 **Hard constraint:** a report must never carry an authoritative ETH amount, NAV,
