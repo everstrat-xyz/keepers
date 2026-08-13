@@ -5,5 +5,7 @@
   "registryAddress": "0x0000000000000000000000000000000000000000",
   "queueExecutorAddress": "0x0000000000000000000000000000000000000000",
   "shadowMode": true,
-  "maxReportAgeSeconds": 3600
+  "maxReportAgeSeconds": 3600,
+  "maxBatchScan": 250,
+  "blockTag": "finalized"
 }
