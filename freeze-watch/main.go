@@ -100,11 +100,7 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		return &Result{Bound: false, Message: "config unresolved: " + err.Error()}, nil
 	}
 
-	tag := evmread.BlockFinalized
-	if config.BlockTag == string(evmread.BlockLatest) {
-		tag = evmread.BlockLatest
-	}
-	caller := evmread.New(runtime, chain.Selector, tag)
+	caller := evmread.New(runtime, chain.Selector, evmread.ParseBlockTag(config.BlockTag))
 	budget := evmread.NewBudget(0)
 
 	obs, err := readObservation(caller, config, registryAddr, budget)

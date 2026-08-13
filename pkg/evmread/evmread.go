@@ -43,6 +43,18 @@ const (
 	BlockLatest BlockTag = "latest"
 )
 
+// ParseBlockTag resolves a configured block tag, defaulting to BlockFinalized.
+//
+// Anything but an explicit "latest" is finalized: consensus safety is the
+// default, so a typo in config degrades to the safe setting rather than
+// silently opting a live DON into reads its nodes cannot agree on.
+func ParseBlockTag(s string) BlockTag {
+	if s == string(BlockLatest) {
+		return BlockLatest
+	}
+	return BlockFinalized
+}
+
 // Caller issues contract reads on one chain.
 type Caller struct {
 	client  *evm.Client
@@ -161,14 +173,23 @@ func (c *Caller) Runtime() cre.Runtime { return c.runtime }
 // the same type assertion and produce a nil-pointer panic on a shape change.
 // These convert once, with an error that names the field.
 
-// Uint64 converts an ABI uint256 return value, rejecting anything that does not
-// fit. Batch ids, indices and timestamps are all uint64-shaped in practice, and
-// a value that overflows means the read is wrong rather than the chain being
-// exotic.
+// Uint64 converts an ABI unsigned-integer return value, rejecting anything that
+// does not fit. Batch ids, indices and timestamps are all uint64-shaped in
+// practice, and a value that overflows means the read is wrong rather than the
+// chain being exotic.
+//
+// Both Go shapes an unsigned ABI return can arrive in are accepted: go-ethereum
+// unpacks uint256 into *big.Int but a declared uint64 (CHAIN_SELECTOR,
+// MAX_REPORT_AGE, lastSequence) into a native uint64. Callers read a mix of the
+// two off one receiver, so making them tell the shapes apart only pushed the
+// same type switch out to every read site.
 func Uint64(v any, field string) (uint64, error) {
+	if n, ok := v.(uint64); ok {
+		return n, nil
+	}
 	n, ok := v.(*big.Int)
 	if !ok {
-		return 0, fmt.Errorf("evmread: %s is %T, want *big.Int", field, v)
+		return 0, fmt.Errorf("evmread: %s is %T, want *big.Int or uint64", field, v)
 	}
 	if !n.IsUint64() {
 		return 0, fmt.Errorf("evmread: %s = %s overflows uint64", field, n)

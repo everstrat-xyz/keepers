@@ -1,7 +1,10 @@
 package evmread_test
 
 import (
+	"math/big"
 	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	everabi "github.com/everstrat-xyz/keepers/contracts/evm/src/abi"
 	"github.com/everstrat-xyz/keepers/pkg/evmread"
@@ -129,6 +132,61 @@ func TestChunkSubCallsEdges(t *testing.T) {
 		if len(c) != 1 {
 			t.Errorf("chunk %d has %d calls, want 1", i, len(c))
 		}
+	}
+}
+
+// TestSubResultAccessorsRejectWrongArity is why these accessors exist rather
+// than a bare type assertion at each read site: a sub-call whose ABI changed
+// shape comes back with a different number of values, and indexing Values[0]
+// blindly would panic inside the workflow instead of failing the read with a
+// message naming the field.
+func TestSubResultAccessorsRejectWrongArity(t *testing.T) {
+	empty := evmread.SubResult{Success: true}
+	if _, err := empty.Uint64("currentBatchId"); err == nil {
+		t.Error("Uint64 on a zero-value result = nil error, want an arity error")
+	}
+	if _, err := empty.Bool("paused"); err == nil {
+		t.Error("Bool on a zero-value result = nil error, want an arity error")
+	}
+	if _, err := empty.BigInt("freeBalance"); err == nil {
+		t.Error("BigInt on a zero-value result = nil error, want an arity error")
+	}
+	if _, err := empty.Address("controller"); err == nil {
+		t.Error("Address on a zero-value result = nil error, want an arity error")
+	}
+
+	twoValues := evmread.SubResult{Success: true, Values: []any{uint64(1), uint64(2)}}
+	if _, err := twoValues.Uint64("batchInfo"); err == nil {
+		t.Error("Uint64 on a 2-value result = nil error, want an arity error")
+	}
+}
+
+func TestSubResultAccessorsDecodeSingleValues(t *testing.T) {
+	got, err := evmread.SubResult{Success: true, Values: []any{big.NewInt(7)}}.Uint64("currentBatchId")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 7 {
+		t.Errorf("Uint64 = %d, want 7", got)
+	}
+
+	paused, err := evmread.SubResult{Success: true, Values: []any{true}}.Bool("paused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !paused {
+		t.Error("Bool = false, want true")
+	}
+
+	addr, err := evmread.SubResult{
+		Success: true,
+		Values:  []any{common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11")},
+	}.Address("controller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11") {
+		t.Errorf("Address = %s, want the Multicall3 address", addr)
 	}
 }
 
