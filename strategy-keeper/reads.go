@@ -127,29 +127,23 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		}
 	}
 
+	// The receiver's uint64 immutables and its uint256 knobs both land here;
+	// SubResult.Uint64 accepts either shape.
 	nums := make([]uint64, len(uintFields))
 	for i, f := range uintFields {
-		r := results[i]
-		if len(r.Values) != 1 {
-			return preamble{}, fmt.Errorf("%s returned %d values, want 1", f.name, len(r.Values))
-		}
-		if n, ok := r.Values[0].(uint64); ok {
-			nums[i] = n
-			continue
-		}
-		if nums[i], err = evmread.Uint64(r.Values[0], f.name); err != nil {
+		if nums[i], err = results[i].Uint64(f.name); err != nil {
 			return preamble{}, err
 		}
 	}
 
 	bigs := make([]*big.Int, len(bigFields))
 	for i, name := range bigFields {
-		if bigs[i], err = singleBigInt(results[len(uintFields)+i], name); err != nil {
+		if bigs[i], err = results[len(uintFields)+i].BigInt(name); err != nil {
 			return preamble{}, err
 		}
 	}
 
-	paused, err := singleBool(results[len(results)-1], "receiver.paused")
+	paused, err := results[len(results)-1].Bool("receiver.paused")
 	if err != nil {
 		return preamble{}, err
 	}
@@ -187,22 +181,22 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		return preamble{}, fmt.Errorf("reading protocol state: %w", err)
 	}
 
-	if out.currentBatchID, err = singleUint64(results[0], "currentBatchId"); err != nil {
+	if out.currentBatchID, err = results[0].Uint64("currentBatchId"); err != nil {
 		return preamble{}, err
 	}
-	if out.maxProcessing, err = singleUint64(results[1], "MAX_BATCH_PROCESSING_TIME"); err != nil {
+	if out.maxProcessing, err = results[1].Uint64("MAX_BATCH_PROCESSING_TIME"); err != nil {
 		return preamble{}, err
 	}
-	if out.queueCursor, err = singleUint64(results[2], "nextLiveBatchIdToProcess"); err != nil {
+	if out.queueCursor, err = results[2].Uint64("nextLiveBatchIdToProcess"); err != nil {
 		return preamble{}, err
 	}
-	if out.ammFreeBalance, err = singleBigInt(results[3], "freeBalance"); err != nil {
+	if out.ammFreeBalance, err = results[3].BigInt("freeBalance"); err != nil {
 		return preamble{}, err
 	}
-	if out.eveBasePrice, err = singleBigInt(results[4], "eveBasePriceInETH"); err != nil {
+	if out.eveBasePrice, err = results[4].BigInt("eveBasePriceInETH"); err != nil {
 		return preamble{}, err
 	}
-	if out.performanceBps, err = singleBigInt(results[5], "performanceFeeBps"); err != nil {
+	if out.performanceBps, err = results[5].BigInt("performanceFeeBps"); err != nil {
 		return preamble{}, err
 	}
 	if len(results[6].Values) != 1 {
@@ -214,7 +208,7 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 
 	out.protocolPaused = out.receiver.Paused
 	for i, label := range []string{"controller.paused", "strategyManager.paused"} {
-		p, err := singleBool(results[7+i], label)
+		p, err := results[7+i].Bool(label)
 		if err != nil {
 			return preamble{}, err
 		}
@@ -323,22 +317,22 @@ func readStrategies(c *evmread.Caller, p preamble, b *evmread.Budget) ([]strateg
 		base := i * 6
 		s := strategy.Strategy{Address: addr}
 		var err error
-		if s.Paused, err = singleBool(values[base], "strategy.paused"); err != nil {
+		if s.Paused, err = values[base].Bool("strategy.paused"); err != nil {
 			return nil, err
 		}
-		if s.Healthy, err = singleBool(values[base+1], "strategy.isHealthy"); err != nil {
+		if s.Healthy, err = values[base+1].Bool("strategy.isHealthy"); err != nil {
 			return nil, err
 		}
-		if s.MaxDeposit, err = singleBigInt(values[base+2], "strategy.maxDeposit"); err != nil {
+		if s.MaxDeposit, err = values[base+2].BigInt("strategy.maxDeposit"); err != nil {
 			return nil, err
 		}
-		if s.MaxWithdrawal, err = singleBigInt(values[base+3], "strategy.maxWithdrawal"); err != nil {
+		if s.MaxWithdrawal, err = values[base+3].BigInt("strategy.maxWithdrawal"); err != nil {
 			return nil, err
 		}
-		if s.InDepositCooldown, err = singleBool(values[base+4], "isStrategyInDepositCooldown"); err != nil {
+		if s.InDepositCooldown, err = values[base+4].Bool("isStrategyInDepositCooldown"); err != nil {
 			return nil, err
 		}
-		if s.PendingPerformanceFeeETH, err = singleBigInt(values[base+5], "pendingPerformanceFeeInETH"); err != nil {
+		if s.PendingPerformanceFeeETH, err = values[base+5].BigInt("pendingPerformanceFeeInETH"); err != nil {
 			return nil, err
 		}
 		out[i] = s
@@ -395,7 +389,7 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 			if err != nil {
 				return nil, false, err
 			}
-			if batch.UnprocessedCount, err = singleUint64(results[i+1], "unprocessedUsersCount"); err != nil {
+			if batch.UnprocessedCount, err = results[i+1].Uint64("unprocessedUsersCount"); err != nil {
 				return nil, false, err
 			}
 			batches[id] = batch
@@ -536,27 +530,4 @@ func decodeQueueRequest(vals []any) (strategy.QueueRequest, error) {
 		TokensToBurn:          tokensToBurn,
 		PriceTolerance:        tolerance,
 	}, nil
-}
-
-// ---------- single-value helpers ----------
-
-func singleUint64(r evmread.SubResult, field string) (uint64, error) {
-	if len(r.Values) != 1 {
-		return 0, fmt.Errorf("%s returned %d values, want 1", field, len(r.Values))
-	}
-	return evmread.Uint64(r.Values[0], field)
-}
-
-func singleBigInt(r evmread.SubResult, field string) (*big.Int, error) {
-	if len(r.Values) != 1 {
-		return nil, fmt.Errorf("%s returned %d values, want 1", field, len(r.Values))
-	}
-	return evmread.BigInt(r.Values[0], field)
-}
-
-func singleBool(r evmread.SubResult, field string) (bool, error) {
-	if len(r.Values) != 1 {
-		return false, fmt.Errorf("%s returned %d values, want 1", field, len(r.Values))
-	}
-	return evmread.Bool(r.Values[0], field)
 }
