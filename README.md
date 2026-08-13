@@ -170,6 +170,35 @@ Onchain registry + identity binding for live `writeReport` are covered by the Se
 └── strategy-keeper/       # W2 — implemented, shadow mode
 ```
 
+## The address book
+
+`pkg/registry` is the one place to get a contract address or its ABI, mirroring
+how nothing on-chain stores its peers' addresses — it holds the Registry and
+asks it. Only `registryAddress` is configured; everything else is derived.
+
+```go
+p, err := registry.Resolve(caller, registryAddress,
+    registry.Controller, registry.ExitQueue, registry.AMM)
+
+exitQueue, _ := p.ExitQueue()
+calls := []evmread.SubCall{
+    exitQueue.Sub("currentBatchId"),   // address and ABI travel together
+    exitQueue.Paused(),                // Pausable is inherited, so it has its own builder
+}
+```
+
+Two properties worth keeping:
+
+- **One chain read** for the whole book, however many keys. Use `ResolveWith`
+  to fold your own independent reads into the same one — against a budget of 15
+  per execution, a spare round trip is expensive.
+- **Address and ABI cannot be mis-paired.** A raw `(address, abiName)` call site
+  can send the ExitQueue's address the Controller's selectors; the call then
+  reverts somewhere far from the mistake. A `Contract` carries both.
+
+The key → ABI mapping is asserted once, in `TestBoundABIsAreVendoredAndUsable`,
+rather than re-derived at each call site.
+
 ## Shared packages
 
 Both workflows encode reports through the same code, so W1 and W2 cannot drift
@@ -182,7 +211,7 @@ from each other or from `CREReceiverBase`.
 | `pkg/strategy` | W2's decision engine: priority order, redemption cost model, action-only `Report.Build` |
 | `pkg/keystone` | Workflow name → `bytes10`, 64-byte metadata encode/decode, and a binding pre-flight check for the cutover |
 | `pkg/chains` | Chain selectors and forwarder addresses, plus `Resolve` to validate a workflow's `config.*.json` |
-| `pkg/registry` | `keccak256` Registry keys (`CONTROLLER`, `EXIT_QUEUE`, …) and role ids, so only the Registry address needs configuring |
+| `pkg/registry` | The protocol address book — the Go mirror of `Registry.sol` + `Auth.sol`. Resolves every contract from the Registry in one chain read and binds each address to its ABI |
 | `pkg/solmath` | Transcriptions of the contracts' `Math` library, so off-chain affordability matches on-chain to the wei |
 | `pkg/evmread` | CRE EVM reads with ABI packing, Multicall3 batching, and the read budget |
 | `pkg/crewrite` | DON-signed `writeReport` delivery, shared by W1/W2 |

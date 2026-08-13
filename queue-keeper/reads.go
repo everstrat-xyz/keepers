@@ -35,15 +35,6 @@ import (
 // cross-check view, and a margin for the write path's own accounting.
 const reservedReads = 2
 
-// protocolAddresses are the contracts W1 reads, all resolved from the Registry
-// rather than configured, so a protocol redeploy that re-registers a contract
-// does not leave the keeper pointed at a dead address.
-type protocolAddresses struct {
-	Controller common.Address
-	ExitQueue  common.Address
-	AMM        common.Address
-}
-
 // receiverConfig is the deployed CREQueueExecutor's own state. It is read every
 // tick rather than mirrored from config: `lastSequence` in particular is not
 // state the workflow owns (see docs/envelope.md).
@@ -60,7 +51,12 @@ type receiverConfig struct {
 // preamble is everything the decision needs before the batch scan, gathered in
 // a single multicall.
 type preamble struct {
-	addrs          protocolAddresses
+	// protocol is the resolved address book. Every protocol address comes from
+	// the Registry, never from config, so a redeploy that re-registers a
+	// contract cannot leave the keeper pointed at a dead address.
+	protocol       registry.Protocol
+	exitQueue      registry.Contract
+	controller     registry.Contract
 	receiver       receiverConfig
 	protocolPaused bool
 	currentBatchID uint64
@@ -85,15 +81,8 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 	// Dispatched first so it is in flight while the multicalls resolve.
 	tsPromise := c.BlockTimestamp()
 
-	// Round 1: registry lookups and everything reachable from the receiver
-	// address alone.
-	keys := []common.Hash{registry.KeyController, registry.KeyExitQueue, registry.KeyAMM}
-	round1 := make([]evmread.SubCall, 0, len(keys)+7)
-	for _, k := range keys {
-		round1 = append(round1, evmread.SubCall{
-			To: reg, ABI: everabi.IRegistry, Method: "getContractByKey", Args: []any{k},
-		})
-	}
+	// Round 1: the address book, plus everything reachable from the receiver
+	// address alone. The Registry lookups all land in one chain read.
 	receiverFields := []struct {
 		name   string
 		abi    everabi.Name
@@ -106,32 +95,38 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		{"minBatchAge", everabi.ICREQueueExecutor, "minBatchAge"},
 		{"maxUsersPerUpkeep", everabi.ICREQueueExecutor, "maxUsersPerUpkeep"},
 	}
+	// The receiver reads do not depend on the resolved addresses, so they ride
+	// in the same chain read as the address book rather than paying for a round
+	// of their own — the budget is 15 for the whole tick.
+	round1 := make([]evmread.SubCall, 0, len(receiverFields)+1)
 	for _, f := range receiverFields {
 		round1 = append(round1, evmread.SubCall{To: receiver, ABI: f.abi, Method: f.method})
 	}
 	round1 = append(round1, evmread.SubCall{To: receiver, ABI: everabi.Pausable, Method: "paused"})
 
-	results, err := c.Aggregate(round1, false).Await()
+	protocol, results, err := registry.ResolveWith(c, reg,
+		[]registry.Key{registry.Controller, registry.ExitQueue, registry.AMM}, round1)
 	if err != nil {
-		return preamble{}, fmt.Errorf("reading protocol addresses and receiver config: %w", err)
+		return preamble{}, err
 	}
 
-	var out preamble
-	targets := []*common.Address{&out.addrs.Controller, &out.addrs.ExitQueue, &out.addrs.AMM}
-	for i, k := range keys {
-		addr, err := singleAddress(results[i], registry.Name(k))
-		if err != nil {
-			return preamble{}, err
-		}
-		if addr == (common.Address{}) {
-			return preamble{}, fmt.Errorf("registry %s has no address for %s", reg, registry.Name(k))
-		}
-		*targets[i] = addr
+	out := preamble{protocol: protocol}
+	out.controller, err = protocol.Controller()
+	if err != nil {
+		return preamble{}, err
+	}
+	out.exitQueue, err = protocol.ExitQueue()
+	if err != nil {
+		return preamble{}, err
+	}
+	amm, err := protocol.AMM()
+	if err != nil {
+		return preamble{}, err
 	}
 
 	nums := make([]uint64, len(receiverFields))
 	for i, f := range receiverFields {
-		r := results[len(keys)+i]
+		r := results[i]
 		if len(r.Values) != 1 {
 			return preamble{}, fmt.Errorf("%s returned %d values, want 1", f.name, len(r.Values))
 		}
@@ -157,13 +152,14 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		return preamble{}, err
 	}
 
-	// Round 2: everything that needed the resolved addresses.
+	// Round 2: everything that needed the resolved addresses. Each sub-call is
+	// built from its Contract, so the address and the ABI cannot be mismatched.
 	round2 := []evmread.SubCall{
-		{To: out.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "currentBatchId"},
-		{To: out.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "MAX_BATCH_PROCESSING_TIME"},
-		{To: out.addrs.Controller, ABI: everabi.Pausable, Method: "paused"},
-		{To: out.addrs.ExitQueue, ABI: everabi.Pausable, Method: "paused"},
-		{To: out.addrs.AMM, ABI: everabi.Pausable, Method: "paused"},
+		out.exitQueue.Sub("currentBatchId"),
+		out.exitQueue.Sub("MAX_BATCH_PROCESSING_TIME"),
+		out.controller.Paused(),
+		out.exitQueue.Paused(),
+		amm.Paused(),
 	}
 	results, err = c.Aggregate(round2, false).Await()
 	if err != nil {
@@ -178,11 +174,11 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 	}
 	out.protocolPaused = out.receiver.Paused
 	for i, label := range []string{"controller.paused", "exitQueue.paused", "amm.paused"} {
-		p, err := singleBool(results[2+i], label)
+		paused, err := singleBool(results[2+i], label)
 		if err != nil {
 			return preamble{}, err
 		}
-		out.protocolPaused = out.protocolPaused || p
+		out.protocolPaused = out.protocolPaused || paused
 	}
 
 	if out.blockTimestamp, err = tsPromise.Await(); err != nil {
@@ -242,7 +238,7 @@ func readQueueState(
 	if !b.Take(1) {
 		return queue.State{}, fmt.Errorf("read budget exhausted before the controller balance")
 	}
-	balance, err := c.BalanceAt(p.addrs.Controller).Await()
+	balance, err := c.BalanceAt(p.controller.Address).Await()
 	if err != nil {
 		return queue.State{}, fmt.Errorf("reading controller balance: %w", err)
 	}
@@ -268,8 +264,8 @@ func readQueueState(
 		ids = append(ids, id)
 		arg := new(big.Int).SetUint64(id)
 		infoCalls = append(infoCalls,
-			evmread.SubCall{To: p.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "batchInfo", Args: []any{arg}},
-			evmread.SubCall{To: p.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "unprocessedUsersCount", Args: []any{arg}},
+			p.exitQueue.Sub("batchInfo", arg),
+			p.exitQueue.Sub("unprocessedUsersCount", arg),
 		)
 	}
 
@@ -343,10 +339,8 @@ func readQueueState(
 
 	userCalls := make([]evmread.SubCall, 0, len(candidates))
 	for _, cand := range candidates {
-		userCalls = append(userCalls, evmread.SubCall{
-			To: p.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "unprocessedUsers",
-			Args: []any{new(big.Int).SetUint64(cand.id), new(big.Int), new(big.Int).SetUint64(cand.limit)},
-		})
+		userCalls = append(userCalls, p.exitQueue.Sub("unprocessedUsers",
+			new(big.Int).SetUint64(cand.id), new(big.Int), new(big.Int).SetUint64(cand.limit)))
 	}
 	if !b.Take(1) {
 		state.ScanTruncatedAt = first
@@ -374,10 +368,8 @@ func readQueueState(
 		}
 		for _, u := range users {
 			owners = append(owners, owner{batchID: cand.id, user: u})
-			requestCalls = append(requestCalls, evmread.SubCall{
-				To: p.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "requestInfo",
-				Args: []any{new(big.Int).SetUint64(cand.id), u},
-			})
+			requestCalls = append(requestCalls,
+				p.exitQueue.Sub("requestInfo", new(big.Int).SetUint64(cand.id), u))
 		}
 	}
 	if len(requestCalls) == 0 {
@@ -410,13 +402,6 @@ func readQueueState(
 }
 
 // ---------- single-value helpers for multicall results ----------
-
-func singleAddress(r evmread.SubResult, field string) (common.Address, error) {
-	if len(r.Values) != 1 {
-		return common.Address{}, fmt.Errorf("%s returned %d values, want 1", field, len(r.Values))
-	}
-	return evmread.Address(r.Values[0], field)
-}
 
 func singleUint64(r evmread.SubResult, field string) (uint64, error) {
 	if len(r.Values) != 1 {
