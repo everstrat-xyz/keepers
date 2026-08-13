@@ -39,6 +39,7 @@ const (
 	IExitQueue       Name = "IExitQueue"
 	IAMM             Name = "IAMM"
 	IStrategyManager Name = "IStrategyManager"
+	IOracle          Name = "IOracle"
 
 	// Pausable is the OpenZeppelin `paused()` fragment. It is hand-written
 	// rather than vendored: the EverStrat interfaces inherit Pausable without
@@ -67,6 +68,7 @@ var All = []Name{
 	IExitQueue,
 	IAMM,
 	IStrategyManager,
+	IOracle,
 	Pausable,
 	Multicall3,
 }

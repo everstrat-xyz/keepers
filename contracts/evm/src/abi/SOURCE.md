@@ -28,6 +28,7 @@ local edit silently desynchronises W1/W2 from the deployed receivers.
 | `IExitQueue.json` | Off-chain full-queue scan: `currentBatchId`, `batchInfo`, `unprocessedUsers*`, `requestInfo`, `MAX_BATCH_PROCESSING_TIME` |
 | `IAMM.json` | Pause state and exit-liquidity reads |
 | `IStrategyManager.json` | Rebalance / deposit-capacity / performance-fee reads |
+| `IOracle.json` | Feed freshness — the Registry address book binds it to the `ORACLE` key |
 
 ## Refreshing
 
@@ -36,7 +37,7 @@ CONTRACTS=../contracts   # path to a clean everstrat-xyz/contracts checkout
 (cd "$CONTRACTS" && forge build)
 
 for f in ICREReceiverBase ICREQueueExecutor ICREStrategyExecutor \
-         IRegistry IController IExitQueue IAMM IStrategyManager; do
+         IRegistry IController IExitQueue IAMM IStrategyManager IOracle; do
   jq -S '.abi' "$CONTRACTS/out/$f.sol/$f.json" > "contracts/evm/src/abi/$f.json"
 done
 
