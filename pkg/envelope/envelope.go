@@ -107,13 +107,7 @@ func (e Envelope) Encode() ([]byte, error) {
 	if e.ObservedAt == 0 {
 		return nil, ErrZeroObservedAt
 	}
-	b, err := abiArgs.Pack(abiEnvelope{
-		ChainSelector: e.ChainSelector,
-		Sequence:      e.Sequence,
-		ObservedAt:    e.ObservedAt,
-		Action:        e.Action,
-		Params:        e.Params,
-	})
+	b, err := abiArgs.Pack(abiEnvelope(e))
 	if err != nil {
 		return nil, fmt.Errorf("envelope: encoding: %w", err)
 	}
@@ -156,7 +150,7 @@ type ReceiverState struct {
 //
 // Because delivery lands some blocks after the workflow runs, `now` should be
 // the earliest plausible delivery time and the caller should leave headroom in
-// MAX_REPORT_AGE — see AgeBudget.
+// MAX_REPORT_AGE — see Deadline and RemainingBudget.
 func (e Envelope) Validate(state ReceiverState, now time.Time) error {
 	if e.ChainSelector != state.ChainSelector {
 		return fmt.Errorf("%w: report %d, receiver %d", ErrWrongChain, e.ChainSelector, state.ChainSelector)

@@ -49,12 +49,6 @@ type aggregate3Call struct {
 	CallData     []byte         `abi:"callData"`
 }
 
-// aggregate3Result mirrors Multicall3.Result.
-type aggregate3Result struct {
-	Success    bool   `abi:"success"`
-	ReturnData []byte `abi:"returnData"`
-}
-
 // resultOverheadBytes is the ABI framing cost of one Result in the returned
 // array: the element offset word, the success word, the returnData offset and
 // length words, plus slack for padding.
@@ -106,8 +100,9 @@ func (c *Caller) Aggregate(calls []SubCall, allowFailure bool) cre.Promise[[]Sub
 			return nil, fmt.Errorf("evmread: aggregate3 returned %d values, want 1", len(vals))
 		}
 
-		// go-ethereum unpacks tuple[] into an anonymous struct slice with the
-		// same field shape, so re-marshal through the declared type.
+		// go-ethereum unpacks tuple[] into an anonymous struct slice it
+		// generates itself, so this assertion has to name that exact shape —
+		// a declared mirror type would not match.
 		raw, ok := vals[0].([]struct {
 			Success    bool   `json:"success"`
 			ReturnData []byte `json:"returnData"`
