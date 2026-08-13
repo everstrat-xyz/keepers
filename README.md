@@ -200,6 +200,35 @@ Note that `go test ./...` does **not** work from a host toolchain: the workflow
 mains are `//go:build wasip1`, so those directories have no buildable files on
 linux/darwin. Use `./pkg/... ./contracts/...`, as the Makefile and CI do.
 
+## Automated PR review
+
+`.github/workflows/claude-code-review.yml` reviews every PR with Claude Code,
+mirroring `everstrat-xyz/contracts`. `.github/workflows/claude.yml` answers
+`@claude` mentions in issues, PR comments and reviews.
+
+The review prompt is aimed at this repo's specific failure modes rather than
+generic code quality — the no-amounts guarantee, CRE's 15-read budget, the
+block-timestamp rule, the W1/W2 scan asymmetry, and Solidity-derived fixtures.
+[`CLAUDE.md`](CLAUDE.md) holds the reasoning behind each, and is the standard
+the reviewer applies.
+
+**Requires `CLAUDE_CODE_OAUTH_TOKEN`** in repository secrets:
+
+```bash
+claude setup-token
+gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo everstrat-xyz/keepers
+```
+
+Without it both workflows skip with a warning annotation and a run-summary note
+saying the PR was **not** reviewed — an unreviewed PR must never look like a
+reviewed one.
+
+To review an existing PR (for example one opened before this landed):
+
+```bash
+gh workflow run claude-code-review.yml --repo everstrat-xyz/keepers -f pr_number=11
+```
+
 ## CI baseline
 
 GitHub Actions (`.github/workflows/ci.yml`):
