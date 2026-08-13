@@ -16,8 +16,9 @@ vet:
 	go vet $(HOST_PKGS)
 	GOOS=wasip1 GOARCH=wasm go vet $(WASM_PKGS)
 
-# Requires golangci-lint v2 (v1 refuses a go1.25 module).
-# go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+# Requires golangci-lint v2 — v1 refuses to run when it was built with an older
+# Go than this module targets:
+#   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 lint:
 	golangci-lint run $(HOST_PKGS)
 	GOOS=wasip1 GOARCH=wasm golangci-lint run ./queue-keeper/... ./strategy-keeper/... ./freeze-watch/...

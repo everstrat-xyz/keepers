@@ -227,7 +227,7 @@ linux/darwin. Use `./pkg/... ./contracts/...`, as the Makefile and CI do.
 GitHub Actions (`.github/workflows/ci.yml`):
 
 1. **`vet / test / lint`** — module tidy check, `go vet` + `go test -race` on the host packages, a `wasip1` vet + build of all three workflows, a compressed-size check against CRE's 20 MB limit, and `gofmt`.
-2. **`golangci-lint`** — host packages, then a second pass with `GOOS=wasip1` so the workflow mains (the keeper logic most worth linting) are covered at all.
+2. **`golangci-lint`** — host packages, then a second pass with `GOOS=wasip1` so the workflow mains (the keeper logic most worth linting) are covered at all. Requires **v2**: v1 refuses to run when built with an older Go than the module targets, and v2 binaries need `golangci-lint-action@v7` or newer.
 3. **`cre workflow simulate`** — all three workflows against `staging-settings`, on **every** PR. No secret gate: `cre workflow simulate` falls back to a default key, so the previous gate on `CRE_ETH_PRIVATE_KEY` made the job report success while doing nothing.
 
 `SEPOLIA_RPC_URL` is the only optional secret, and only to avoid public-RPC rate limits.

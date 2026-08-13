@@ -69,6 +69,10 @@ jobs:
             echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
           fi
 
+  # golangci-lint v2 is required: v1 refuses to run when it was built with an
+  # older Go than the module targets ("go1.23 ... lower than 1.25.3"). v2
+  # binaries need action v7 or newer, so the action and the version pin have to
+  # move together.
   lint:
     name: golangci-lint
     runs-on: ubuntu-latest
@@ -80,21 +84,21 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Lint host packages
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.62.2
+          version: v2.12.2
           args: --timeout=5m ./pkg/... ./contracts/...
 
       # The workflow mains only compile under wasip1, so they need a second
       # pass with the build target set. Without this the keeper logic — the
       # part most worth linting — is never linted at all.
       - name: Lint workflows (wasip1)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         env:
           GOOS: wasip1
           GOARCH: wasm
         with:
-          version: v1.62.2
+          version: v2.12.2
           args: --timeout=5m ./queue-keeper/... ./strategy-keeper/... ./freeze-watch/...
 
   simulate:
