@@ -120,9 +120,8 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		rendered[i] = a.String()
 	}
 
-	logger.Info("W4 freeze-watch tick",
-		"chainName", chain.Name,
-		"registry", registryAddr.Hex(),
+	tickAttrs := append([]any{"chainName", chain.Name}, obs.Protocol.LogAttrs()...)
+	logger.Info("W4 freeze-watch tick", append(tickAttrs,
 		"critical", summary.Critical,
 		"warning", summary.Warning,
 		"blockTimestamp", obs.Now,
@@ -130,7 +129,7 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		"feedsWatched", len(obs.Feeds),
 		"strategiesWatched", len(obs.Strategies),
 		"readsRemaining", budget.Remaining(),
-	)
+	)...)
 	for _, a := range alerts {
 		if a.Severity == freezewatch.SeverityCritical {
 			logger.Error("W4 alert", "kind", string(a.Kind), "subject", a.Subject, "message", a.Message)

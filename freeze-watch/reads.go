@@ -41,44 +41,35 @@ func readObservation(
 	}
 	tsPromise := c.BlockTimestamp()
 
-	// Round 1: address resolution.
-	keys := []common.Hash{
-		registry.KeyController, registry.KeyExitQueue, registry.KeyAMM,
-		registry.KeyStrategyManager, registry.KeyOracle, registry.KeyQueueKeeperExecutor,
-	}
-	round1 := make([]evmread.SubCall, len(keys))
-	for i, k := range keys {
-		round1[i] = evmread.SubCall{To: reg, ABI: everabi.IRegistry, Method: "getContractByKey", Args: []any{k}}
-	}
-	results, err := c.Aggregate(round1, false).Await()
+	// Round 1: the address book. W4 watches more contracts than the keepers do
+	// — it is the thing that notices when one of them is wrong.
+	protocol, err := registry.Resolve(c, reg,
+		registry.Controller, registry.ExitQueue, registry.AMM,
+		registry.StrategyManager, registry.Oracle, registry.QueueKeeperExecutor)
 	if err != nil {
-		return obs, fmt.Errorf("resolving protocol addresses: %w", err)
+		return obs, err
 	}
 
-	addrs := make([]common.Address, len(keys))
-	for i, k := range keys {
-		if len(results[i].Values) != 1 {
-			return obs, fmt.Errorf("%s lookup returned %d values", registry.Name(k), len(results[i].Values))
-		}
-		if addrs[i], err = evmread.Address(results[i].Values[0], registry.Name(k)); err != nil {
-			return obs, err
-		}
-	}
-	controller, exitQueue, amm, strategyManager, oracle, queueExecutor :=
-		addrs[0], addrs[1], addrs[2], addrs[3], addrs[4], addrs[5]
+	controller := protocol.MustGet(registry.Controller)
+	exitQueue := protocol.MustGet(registry.ExitQueue)
+	amm := protocol.MustGet(registry.AMM)
+	strategyManager := protocol.MustGet(registry.StrategyManager)
+	oracle := protocol.MustGet(registry.Oracle)
+	queueExecutor := protocol.MustGet(registry.QueueKeeperExecutor)
+	obs.Protocol = protocol
 
 	// Round 2: pause flags, queue geometry, strategy list.
 	round2 := []evmread.SubCall{
-		{To: controller, ABI: everabi.Pausable, Method: "paused"},
-		{To: exitQueue, ABI: everabi.Pausable, Method: "paused"},
-		{To: amm, ABI: everabi.Pausable, Method: "paused"},
-		{To: strategyManager, ABI: everabi.Pausable, Method: "paused"},
-		{To: exitQueue, ABI: everabi.IExitQueue, Method: "currentBatchId"},
-		{To: exitQueue, ABI: everabi.IExitQueue, Method: "MAX_BATCH_PROCESSING_TIME"},
-		{To: queueExecutor, ABI: everabi.ICREQueueExecutor, Method: "nextLiveBatchIdToProcess"},
-		{To: strategyManager, ABI: everabi.IStrategyManager, Method: "strategies"},
+		controller.Paused(),
+		exitQueue.Paused(),
+		amm.Paused(),
+		strategyManager.Paused(),
+		exitQueue.Sub("currentBatchId"),
+		exitQueue.Sub("MAX_BATCH_PROCESSING_TIME"),
+		queueExecutor.Sub("nextLiveBatchIdToProcess"),
+		strategyManager.Sub("strategies"),
 	}
-	results, err = c.Aggregate(round2, false).Await()
+	results, err := c.Aggregate(round2, false).Await()
 	if err != nil {
 		return obs, fmt.Errorf("reading protocol status: %w", err)
 	}
@@ -124,7 +115,7 @@ func readObservation(
 	if err := readStrategies(c, strategies, &obs, b); err != nil {
 		return obs, err
 	}
-	if err := readOracle(c, oracle, amm, &obs, b); err != nil {
+	if err := readOracle(c, oracle, &obs, b); err != nil {
 		return obs, err
 	}
 	readKeepers(c, config, &obs, b)
@@ -135,7 +126,7 @@ func readObservation(
 // readBatches checks the oldest unprocessed batches for escape-hatch exposure.
 func readBatches(
 	c *evmread.Caller,
-	exitQueue common.Address,
+	exitQueue registry.Contract,
 	cursor, currentBatchID uint64,
 	obs *freezewatch.Observation,
 	b *evmread.Budget,
@@ -154,8 +145,8 @@ func readBatches(
 		ids = append(ids, id)
 		arg := new(big.Int).SetUint64(id)
 		calls = append(calls,
-			evmread.SubCall{To: exitQueue, ABI: everabi.IExitQueue, Method: "batchInfo", Args: []any{arg}},
-			evmread.SubCall{To: exitQueue, ABI: everabi.IExitQueue, Method: "unprocessedUsersCount", Args: []any{arg}},
+			exitQueue.Sub("batchInfo", arg),
+			exitQueue.Sub("unprocessedUsersCount", arg),
 		)
 	}
 
@@ -242,7 +233,7 @@ func readStrategies(
 // configured, so a feed swap does not silently leave W4 watching nothing.
 func readOracle(
 	c *evmread.Caller,
-	oracle, amm common.Address,
+	oracle registry.Contract,
 	obs *freezewatch.Observation,
 	b *evmread.Budget,
 ) error {
@@ -250,7 +241,7 @@ func readOracle(
 		return nil
 	}
 
-	vals, err := c.Call(oracle, everabi.IOracle, "getSupportedTokens").Await()
+	vals, err := c.Call(oracle.Address, everabi.IOracle, "getSupportedTokens").Await()
 	if err != nil {
 		// An Oracle that cannot be read is itself worth knowing about, but it
 		// is not an alert this function can raise without inventing a feed.
@@ -266,9 +257,7 @@ func readOracle(
 
 	calls := make([]evmread.SubCall, 0, len(tokens))
 	for _, tok := range tokens {
-		calls = append(calls, evmread.SubCall{
-			To: oracle, ABI: everabi.IOracle, Method: "getUsdPrice", Args: []any{tok},
-		})
+		calls = append(calls, oracle.Sub("getUsdPrice", tok))
 	}
 
 	done := 0
