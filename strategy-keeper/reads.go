@@ -30,14 +30,6 @@ import (
 
 const reservedReads = 2
 
-type protocolAddresses struct {
-	Controller      common.Address
-	ExitQueue       common.Address
-	AMM             common.Address
-	StrategyManager common.Address
-	QueueExecutor   common.Address
-}
-
 // receiverConfig is the deployed CREStrategyExecutor's own state.
 type receiverConfig struct {
 	ChainSelector uint64
@@ -56,10 +48,16 @@ type receiverConfig struct {
 }
 
 type preamble struct {
-	addrs          protocolAddresses
-	receiver       receiverConfig
-	protocolPaused bool
-	blockTimestamp uint64
+	// protocol is the resolved address book — see pkg/registry.
+	protocol        registry.Protocol
+	controller      registry.Contract
+	exitQueue       registry.Contract
+	amm             registry.Contract
+	strategyManager registry.Contract
+	queueExecutor   registry.Contract
+	receiver        receiverConfig
+	protocolPaused  bool
+	blockTimestamp  uint64
 
 	currentBatchID uint64
 	queueCursor    uint64
@@ -77,18 +75,9 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 
 	tsPromise := c.BlockTimestamp()
 
-	// Round 1: registry lookups plus everything reachable from the receiver.
-	keys := []common.Hash{
-		registry.KeyController, registry.KeyExitQueue, registry.KeyAMM,
-		registry.KeyStrategyManager, registry.KeyQueueKeeperExecutor,
-	}
-	round1 := make([]evmread.SubCall, 0, len(keys)+12)
-	for _, k := range keys {
-		round1 = append(round1, evmread.SubCall{
-			To: reg, ABI: everabi.IRegistry, Method: "getContractByKey", Args: []any{k},
-		})
-	}
-
+	// Round 1: the address book plus everything reachable from the receiver
+	// address alone. The receiver reads do not depend on the resolved
+	// addresses, so they ride in the same chain read (see registry.ResolveWith).
 	uintFields := []struct {
 		name   string
 		abi    everabi.Name
@@ -100,44 +89,47 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		{"syncInterval", everabi.ICREStrategyExecutor, "syncInterval"},
 		{"lastSyncAt", everabi.ICREStrategyExecutor, "lastSyncAt"},
 	}
-	for _, f := range uintFields {
-		round1 = append(round1, evmread.SubCall{To: receiver, ABI: f.abi, Method: f.method})
-	}
-
 	bigFields := []string{
 		"controllerReserveETH", "minDepositETH", "minWithdrawETH",
 		"minHarvestETH", "exitLiquidityTargetETH", "minExitLiquidityTopUpETH",
+	}
+
+	round1 := make([]evmread.SubCall, 0, len(uintFields)+len(bigFields)+1)
+	for _, f := range uintFields {
+		round1 = append(round1, evmread.SubCall{To: receiver, ABI: f.abi, Method: f.method})
 	}
 	for _, m := range bigFields {
 		round1 = append(round1, evmread.SubCall{To: receiver, ABI: everabi.ICREStrategyExecutor, Method: m})
 	}
 	round1 = append(round1, evmread.SubCall{To: receiver, ABI: everabi.Pausable, Method: "paused"})
 
-	results, err := c.Aggregate(round1, false).Await()
+	protocol, results, err := registry.ResolveWith(c, reg, []registry.Key{
+		registry.Controller, registry.ExitQueue, registry.AMM,
+		registry.StrategyManager, registry.QueueKeeperExecutor,
+	}, round1)
 	if err != nil {
-		return preamble{}, fmt.Errorf("reading protocol addresses and receiver config: %w", err)
+		return preamble{}, err
 	}
 
-	var out preamble
-	targets := []*common.Address{
-		&out.addrs.Controller, &out.addrs.ExitQueue, &out.addrs.AMM,
-		&out.addrs.StrategyManager, &out.addrs.QueueExecutor,
-	}
-	for i, k := range keys {
-		addr, err := singleAddress(results[i], registry.Name(k))
-		if err != nil {
+	out := preamble{protocol: protocol}
+	for _, bind := range []struct {
+		key  registry.Key
+		into *registry.Contract
+	}{
+		{registry.Controller, &out.controller},
+		{registry.ExitQueue, &out.exitQueue},
+		{registry.AMM, &out.amm},
+		{registry.StrategyManager, &out.strategyManager},
+		{registry.QueueKeeperExecutor, &out.queueExecutor},
+	} {
+		if *bind.into, err = protocol.Get(bind.key); err != nil {
 			return preamble{}, err
 		}
-		if addr == (common.Address{}) {
-			return preamble{}, fmt.Errorf("registry %s has no address for %s", reg, registry.Name(k))
-		}
-		*targets[i] = addr
 	}
 
-	base := len(keys)
 	nums := make([]uint64, len(uintFields))
 	for i, f := range uintFields {
-		r := results[base+i]
+		r := results[i]
 		if len(r.Values) != 1 {
 			return preamble{}, fmt.Errorf("%s returned %d values, want 1", f.name, len(r.Values))
 		}
@@ -150,10 +142,9 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		}
 	}
 
-	base += len(uintFields)
 	bigs := make([]*big.Int, len(bigFields))
 	for i, name := range bigFields {
-		if bigs[i], err = singleBigInt(results[base+i], name); err != nil {
+		if bigs[i], err = singleBigInt(results[len(uintFields)+i], name); err != nil {
 			return preamble{}, err
 		}
 	}
@@ -178,17 +169,18 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		Paused:                   paused,
 	}
 
-	// Round 2: everything that needed the resolved addresses.
+	// Round 2: everything that needed the resolved addresses. Built from the
+	// Contracts, so no call site pairs an address with the wrong ABI.
 	round2 := []evmread.SubCall{
-		{To: out.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "currentBatchId"},
-		{To: out.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "MAX_BATCH_PROCESSING_TIME"},
-		{To: out.addrs.QueueExecutor, ABI: everabi.ICREQueueExecutor, Method: "nextLiveBatchIdToProcess"},
-		{To: out.addrs.AMM, ABI: everabi.IAMM, Method: "freeBalance"},
-		{To: out.addrs.AMM, ABI: everabi.IAMM, Method: "eveBasePriceInETH"},
-		{To: out.addrs.StrategyManager, ABI: everabi.IStrategyManager, Method: "performanceFeeBps"},
-		{To: out.addrs.StrategyManager, ABI: everabi.IStrategyManager, Method: "strategies"},
-		{To: out.addrs.Controller, ABI: everabi.Pausable, Method: "paused"},
-		{To: out.addrs.StrategyManager, ABI: everabi.Pausable, Method: "paused"},
+		out.exitQueue.Sub("currentBatchId"),
+		out.exitQueue.Sub("MAX_BATCH_PROCESSING_TIME"),
+		out.queueExecutor.Sub("nextLiveBatchIdToProcess"),
+		out.amm.Sub("freeBalance"),
+		out.amm.Sub("eveBasePriceInETH"),
+		out.strategyManager.Sub("performanceFeeBps"),
+		out.strategyManager.Sub("strategies"),
+		out.controller.Paused(),
+		out.strategyManager.Paused(),
 	}
 	results, err = c.Aggregate(round2, false).Await()
 	if err != nil {
@@ -207,9 +199,6 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 	if out.ammFreeBalance, err = singleBigInt(results[3], "freeBalance"); err != nil {
 		return preamble{}, err
 	}
-	// The AMM reverts AMMZeroTotalSupply before anything is minted; treat that
-	// as a zero price rather than a failed tick, since with no supply there are
-	// no redemptions to price either.
 	if out.eveBasePrice, err = singleBigInt(results[4], "eveBasePriceInETH"); err != nil {
 		return preamble{}, err
 	}
@@ -276,7 +265,7 @@ func readStrategyState(c *evmread.Caller, p preamble, b *evmread.Budget) (strate
 	if !b.Take(1) {
 		return strategy.State{}, fmt.Errorf("read budget exhausted before the controller balance")
 	}
-	balance, err := c.BalanceAt(p.addrs.Controller).Await()
+	balance, err := c.BalanceAt(p.controller.Address).Await()
 	if err != nil {
 		return strategy.State{}, fmt.Errorf("reading controller balance: %w", err)
 	}
@@ -311,10 +300,8 @@ func readStrategies(c *evmread.Caller, p preamble, b *evmread.Budget) ([]strateg
 			evmread.SubCall{To: addr, ABI: everabi.IStrategy, Method: "isHealthy"},
 			evmread.SubCall{To: addr, ABI: everabi.IStrategy, Method: "maxDeposit"},
 			evmread.SubCall{To: addr, ABI: everabi.IStrategy, Method: "maxWithdrawal"},
-			evmread.SubCall{To: p.addrs.StrategyManager, ABI: everabi.IStrategyManager,
-				Method: "isStrategyInDepositCooldown", Args: []any{addr}},
-			evmread.SubCall{To: p.addrs.StrategyManager, ABI: everabi.IStrategyManager,
-				Method: "pendingPerformanceFeeInETH", Args: []any{addr}},
+			p.strategyManager.Sub("isStrategyInDepositCooldown", addr),
+			p.strategyManager.Sub("pendingPerformanceFeeInETH", addr),
 		)
 	}
 
@@ -383,8 +370,8 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 		ids = append(ids, id)
 		arg := new(big.Int).SetUint64(id)
 		calls = append(calls,
-			evmread.SubCall{To: p.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "batchInfo", Args: []any{arg}},
-			evmread.SubCall{To: p.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "unprocessedUsersCount", Args: []any{arg}},
+			p.exitQueue.Sub("batchInfo", arg),
+			p.exitQueue.Sub("unprocessedUsersCount", arg),
 		)
 	}
 
@@ -433,10 +420,8 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 			limit = strategy.MaxUsersCostScan
 		}
 		userIDs = append(userIDs, id)
-		userCalls = append(userCalls, evmread.SubCall{
-			To: p.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "unprocessedUsers",
-			Args: []any{new(big.Int).SetUint64(id), new(big.Int), new(big.Int).SetUint64(limit)},
-		})
+		userCalls = append(userCalls, p.exitQueue.Sub("unprocessedUsers",
+			new(big.Int).SetUint64(id), new(big.Int), new(big.Int).SetUint64(limit)))
 	}
 
 	if len(userCalls) > 0 {
@@ -460,10 +445,8 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 				}
 				for _, u := range users {
 					reqOwners = append(reqOwners, id)
-					reqCalls = append(reqCalls, evmread.SubCall{
-						To: p.addrs.ExitQueue, ABI: everabi.IExitQueue, Method: "requestInfo",
-						Args: []any{new(big.Int).SetUint64(id), u},
-					})
+					reqCalls = append(reqCalls,
+						p.exitQueue.Sub("requestInfo", new(big.Int).SetUint64(id), u))
 				}
 			}
 
@@ -556,13 +539,6 @@ func decodeQueueRequest(vals []any) (strategy.QueueRequest, error) {
 }
 
 // ---------- single-value helpers ----------
-
-func singleAddress(r evmread.SubResult, field string) (common.Address, error) {
-	if len(r.Values) != 1 {
-		return common.Address{}, fmt.Errorf("%s returned %d values, want 1", field, len(r.Values))
-	}
-	return evmread.Address(r.Values[0], field)
-}
 
 func singleUint64(r evmread.SubResult, field string) (uint64, error) {
 	if len(r.Values) != 1 {

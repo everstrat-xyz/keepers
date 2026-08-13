@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+
+	"github.com/everstrat-xyz/keepers/pkg/registry"
 )
 
 // Severity ranks an alert for routing.
@@ -122,6 +124,10 @@ type CallFailure struct {
 // Observation is everything W4 read this tick.
 type Observation struct {
 	Now uint64
+
+	// Protocol is the address book this observation was read through, so an
+	// alert can be traced to the deployment it came from.
+	Protocol registry.Protocol
 
 	ControllerPaused      bool
 	ExitQueuePaused       bool
