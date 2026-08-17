@@ -202,3 +202,25 @@ func Deadline(observedAt time.Time, maxReportAge uint64) time.Time {
 func RemainingBudget(observedAt time.Time, maxReportAge uint64, now time.Time) time.Duration {
 	return Deadline(observedAt, maxReportAge).Sub(now)
 }
+
+// DeliveryMargin is the headroom a report needs beyond consensus and
+// transmission before emitting is worthwhile.
+//
+// Validation alone is not enough: a report validated at build time can still
+// be stale by the time the DON agrees on it and the transaction lands, because
+// MAX_REPORT_AGE is consumed by delivery latency, not by build time. The
+// observedAt -> deadline budget is hours (MAX_REPORT_AGE is at least a
+// constructor-enforced non-zero value, and chains.MaxReportAgeCeiling caps
+// config mirrors at 24h), so a two-minute margin is a small fraction of it
+// while comfortably covering a DON round trip.
+const DeliveryMargin = 2 * time.Minute
+
+// CanPlausiblyDeliver reports whether a report observed at observedAt still
+// has more than DeliveryMargin of MAX_REPORT_AGE left at now.
+//
+// The receiver's staleness revert is guaranteed either way; this exists so a
+// report that would only just make it is skipped at build time instead of
+// burning credits on a delivery that races the deadline.
+func CanPlausiblyDeliver(observedAt time.Time, maxReportAge uint64, now time.Time) bool {
+	return RemainingBudget(observedAt, maxReportAge, now) > DeliveryMargin
+}

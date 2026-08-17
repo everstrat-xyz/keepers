@@ -213,6 +213,45 @@ func Addresses(v any, field string) ([]common.Address, error) {
 	return a, nil
 }
 
+// ---------- single-value helpers for multicall results ----------
+//
+// Multicall sub-calls that expect exactly one return value: these add the
+// arity check on top of the converters above. Until the registry address-book
+// refactor, each workflow carried its own copy (singleUint64 here, uint64Result
+// there) — same shape, three names. They belong next to SubResult.
+
+// SingleUint64 converts a one-value SubResult to uint64.
+func SingleUint64(r SubResult, field string) (uint64, error) {
+	if len(r.Values) != 1 {
+		return 0, fmt.Errorf("evmread: %s returned %d values, want 1", field, len(r.Values))
+	}
+	return Uint64(r.Values[0], field)
+}
+
+// SingleBigInt converts a one-value SubResult to *big.Int.
+func SingleBigInt(r SubResult, field string) (*big.Int, error) {
+	if len(r.Values) != 1 {
+		return nil, fmt.Errorf("evmread: %s returned %d values, want 1", field, len(r.Values))
+	}
+	return BigInt(r.Values[0], field)
+}
+
+// SingleBool converts a one-value SubResult to bool.
+func SingleBool(r SubResult, field string) (bool, error) {
+	if len(r.Values) != 1 {
+		return false, fmt.Errorf("evmread: %s returned %d values, want 1", field, len(r.Values))
+	}
+	return Bool(r.Values[0], field)
+}
+
+// SingleAddress converts a one-value SubResult to common.Address.
+func SingleAddress(r SubResult, field string) (common.Address, error) {
+	if len(r.Values) != 1 {
+		return common.Address{}, fmt.Errorf("evmread: %s returned %d values, want 1", field, len(r.Values))
+	}
+	return Address(r.Values[0], field)
+}
+
 // AwaitAll resolves a slice of already-dispatched promises, returning the first
 // error with its index.
 //

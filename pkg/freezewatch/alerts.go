@@ -42,7 +42,6 @@ const (
 	KindReceiverUnbound     Kind = "receiver-unbound"
 	KindKeeperStalled       Kind = "keeper-stalled"
 	KindStrategyUnhealthy   Kind = "strategy-unhealthy"
-	KindStrategyCallFailure Kind = "strategy-call-failure"
 	KindUpkeepBacklog       Kind = "upkeep-backlog"
 )
 
@@ -113,14 +112,6 @@ type StrategyHealth struct {
 	Healthy bool
 }
 
-// CallFailure is a `Strategy*Failed` / `CallerRoleRevokeFailed` event seen in
-// the scanned block range.
-type CallFailure struct {
-	Event   string
-	Block   uint64
-	Subject string
-}
-
 // Observation is everything W4 read this tick.
 type Observation struct {
 	Now uint64
@@ -142,7 +133,6 @@ type Observation struct {
 
 	Feeds      []OracleFeed
 	Strategies []StrategyHealth
-	Failures   []CallFailure
 
 	// Keepers is per-receiver liveness.
 	Keepers []KeeperHealth
@@ -156,6 +146,13 @@ type KeeperHealth struct {
 	Bound bool
 	// LastAcceptedAt is when the receiver last accepted a report. Zero means
 	// never, which is expected before cutover.
+	//
+	// CONTRACT-BLOCKED: no receiver view exposes this — `readKeepers` in
+	// freeze-watch/reads.go cannot populate it, so KindKeeperStalled never
+	// fires in production today, and the unit tests (which set this field
+	// directly) mask that. Needs a `lastReportAcceptedAt()` accessor (or
+	// equivalent) on CREReceiverBase in everstrat-xyz/contracts; wire it up
+	// in readKeepers as part of that change.
 	LastAcceptedAt uint64
 	// UpkeepAvailable is whether the receiver's own view currently recommends
 	// an action. A keeper is only "stalled" if there was work to do.
@@ -283,16 +280,6 @@ func Evaluate(o Observation, t Thresholds) []Alert {
 				Message:  "strategy reports unhealthy and is not paused; a rebalance is due",
 			})
 		}
-	}
-
-	// Failure events observed on-chain.
-	for _, f := range o.Failures {
-		alerts = append(alerts, Alert{
-			Kind:     KindStrategyCallFailure,
-			Severity: SeverityWarning,
-			Subject:  f.Subject,
-			Message:  fmt.Sprintf("%s emitted at block %d", f.Event, f.Block),
-		})
 	}
 
 	sortAlerts(alerts)

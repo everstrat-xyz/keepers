@@ -50,6 +50,9 @@ cast codesize 0xcA11bde05977b3631167028862bE2a173976CA11 --rpc-url http://127.0.
 cd ../contracts
 forge build   # `forge clean` first if artifacts reference deleted sources
 
+# PRIVATE_KEY below is Foundry's well-known anvil account #0 key — public
+# fixture data, not a secret. Secret-scanning greps will flag it; that is the
+# expected, reviewed exception.
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
 PRICE_FEED=0x694AA1769357215DE4FAC081bf1f309aDC325306 \
 WETH_ADDRESS=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14 \

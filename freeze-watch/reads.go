@@ -76,21 +76,21 @@ func readObservation(
 
 	flags := make([]bool, 4)
 	for i := range flags {
-		if flags[i], err = boolResult(results[i], "paused"); err != nil {
+		if flags[i], err = evmread.SingleBool(results[i], "paused"); err != nil {
 			return obs, err
 		}
 	}
 	obs.ControllerPaused, obs.ExitQueuePaused, obs.AMMPaused, obs.StrategyManagerPaused =
 		flags[0], flags[1], flags[2], flags[3]
 
-	currentBatchID, err := uint64Result(results[4], "currentBatchId")
+	currentBatchID, err := evmread.SingleUint64(results[4], "currentBatchId")
 	if err != nil {
 		return obs, err
 	}
-	if obs.MaxBatchProcessingTime, err = uint64Result(results[5], "MAX_BATCH_PROCESSING_TIME"); err != nil {
+	if obs.MaxBatchProcessingTime, err = evmread.SingleUint64(results[5], "MAX_BATCH_PROCESSING_TIME"); err != nil {
 		return obs, err
 	}
-	cursor, err := uint64Result(results[6], "nextLiveBatchIdToProcess")
+	cursor, err := evmread.SingleUint64(results[6], "nextLiveBatchIdToProcess")
 	if err != nil {
 		return obs, err
 	}
@@ -168,7 +168,7 @@ func readBatches(
 			if err != nil {
 				return err
 			}
-			count, err := uint64Result(results[i+1], "unprocessedUsersCount")
+			count, err := evmread.SingleUint64(results[i+1], "unprocessedUsersCount")
 			if err != nil {
 				return err
 			}
@@ -210,11 +210,11 @@ func readStrategies(
 		}
 		for i := 0; i < len(results); i += 2 {
 			addr := strategies[(done+i)/2]
-			paused, err := boolResult(results[i], "strategy.paused")
+			paused, err := evmread.SingleBool(results[i], "strategy.paused")
 			if err != nil {
 				return err
 			}
-			healthy, err := boolResult(results[i+1], "strategy.isHealthy")
+			healthy, err := evmread.SingleBool(results[i+1], "strategy.isHealthy")
 			if err != nil {
 				return err
 			}
@@ -336,7 +336,7 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 			}
 		}
 		if results[2].Success {
-			paused, err := boolResult(results[2], "receiver.paused")
+			paused, err := evmread.SingleBool(results[2], "receiver.paused")
 			if err == nil {
 				k.Paused = paused
 			}
@@ -361,18 +361,4 @@ func chainsParseAddress(s string) (common.Address, error) {
 		return common.Address{}, fmt.Errorf("zero address")
 	}
 	return addr, nil
-}
-
-func uint64Result(r evmread.SubResult, field string) (uint64, error) {
-	if len(r.Values) != 1 {
-		return 0, fmt.Errorf("%s returned %d values, want 1", field, len(r.Values))
-	}
-	return evmread.Uint64(r.Values[0], field)
-}
-
-func boolResult(r evmread.SubResult, field string) (bool, error) {
-	if len(r.Values) != 1 {
-		return false, fmt.Errorf("%s returned %d values, want 1", field, len(r.Values))
-	}
-	return evmread.Bool(r.Values[0], field)
 }
