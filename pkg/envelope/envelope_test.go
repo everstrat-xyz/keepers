@@ -294,3 +294,55 @@ func TestDeadlineAndRemainingBudget(t *testing.T) {
 		t.Errorf("RemainingBudget() past deadline = %v, want negative", got)
 	}
 }
+
+func TestCanPlausiblyDeliver(t *testing.T) {
+	observed := time.Unix(1700000000, 0)
+	const age = uint64(3600) // 1h
+
+	tests := []struct {
+		name string
+		now  time.Time
+		want bool
+	}{
+		{"fresh report", observed, true},
+		{"just outside the margin", observed.Add(time.Hour - envelope.DeliveryMargin - time.Second), true},
+		{"at exactly the margin", observed.Add(time.Hour - envelope.DeliveryMargin), false},
+		{"inside the margin", observed.Add(time.Hour - envelope.DeliveryMargin + time.Second), false},
+		{"past the deadline", observed.Add(2 * time.Hour), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := envelope.CanPlausiblyDeliver(observed, age, tt.now); got != tt.want {
+				t.Errorf("CanPlausiblyDeliver(now=%s) = %v, want %v", tt.now.Format(time.Kitchen), got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCanPlausiblyDeliverAgreesWithValidate pins the relationship the W1/W2
+// pre-flight relies on: everything Validate accepts must also be plausibly
+// deliverable, except the band inside DeliveryMargin of the deadline, where
+// the margin check is the stricter gate. The reverse must never hold — a
+// report past its deadline can pass no check at all.
+func TestCanPlausiblyDeliverAgreesWithValidate(t *testing.T) {
+	const (
+		sel = uint64(16015286601757825753)
+		age = uint64(3600)
+	)
+	observed := time.Unix(1700000000, 0)
+	e := envelope.Envelope{ChainSelector: sel, Sequence: 2, ObservedAt: uint64(observed.Unix())}
+	state := envelope.ReceiverState{ChainSelector: sel, LastSequence: 1, MaxReportAge: age}
+
+	// Validate accepts anything up to and including the deadline; the margin
+	// carves out the last DeliveryMargin of it.
+	acceptedByValidate := observed.Add(time.Duration(age)*time.Second - time.Second)
+	if err := e.Validate(state, acceptedByValidate); err != nil {
+		t.Fatalf("Validate() at deadline-1s = %v, want nil", err)
+	}
+	if envelope.CanPlausiblyDeliver(observed, age, acceptedByValidate) {
+		t.Error("CanPlausiblyDeliver is true at deadline-1s; the margin must be stricter than Validate here")
+	}
+	if err := e.Validate(state, observed.Add(time.Duration(age)*time.Second+time.Second)); err == nil {
+		t.Error("Validate() past the deadline succeeded, want ErrStaleReport")
+	}
+}
