@@ -36,13 +36,13 @@ const (
 type Kind string
 
 const (
-	KindOracleStale         Kind = "oracle-stale"
-	KindBatchEscapeHatch    Kind = "batch-escape-hatch"
-	KindProtocolPaused      Kind = "protocol-paused"
-	KindReceiverUnbound     Kind = "receiver-unbound"
-	KindKeeperStalled       Kind = "keeper-stalled"
-	KindStrategyUnhealthy   Kind = "strategy-unhealthy"
-	KindUpkeepBacklog       Kind = "upkeep-backlog"
+	KindOracleStale       Kind = "oracle-stale"
+	KindBatchEscapeHatch  Kind = "batch-escape-hatch"
+	KindProtocolPaused    Kind = "protocol-paused"
+	KindReceiverUnbound   Kind = "receiver-unbound"
+	KindKeeperStalled     Kind = "keeper-stalled"
+	KindStrategyUnhealthy Kind = "strategy-unhealthy"
+	KindUpkeepBacklog     Kind = "upkeep-backlog"
 )
 
 // Alert is one firing condition.

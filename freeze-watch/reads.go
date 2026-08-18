@@ -341,12 +341,12 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 				k.Bound = author != (common.Address{})
 			}
 		}
-	if results[2].Success {
-		paused, err := results[2].Bool("receiver.paused")
-		if err == nil {
-			k.Paused = paused
+		if results[2].Success {
+			paused, err := results[2].Bool("receiver.paused")
+			if err == nil {
+				k.Paused = paused
+			}
 		}
-	}
 		if results[3].Success && len(results[3].Values) > 0 {
 			if action, ok := results[3].Values[0].(uint8); ok {
 				k.UpkeepAvailable = action != 0
