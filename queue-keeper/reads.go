@@ -124,19 +124,11 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		return preamble{}, err
 	}
 
+	// CHAIN_SELECTOR / MAX_REPORT_AGE / lastSequence are uint64 on-chain; the
+	// executor knobs are uint256. SubResult.Uint64 accepts either shape.
 	nums := make([]uint64, len(receiverFields))
 	for i, f := range receiverFields {
-		r := results[i]
-		if len(r.Values) != 1 {
-			return preamble{}, fmt.Errorf("%s returned %d values, want 1", f.name, len(r.Values))
-		}
-		// CHAIN_SELECTOR / MAX_REPORT_AGE / lastSequence are uint64 on-chain;
-		// the executor knobs are uint256.
-		if n, ok := r.Values[0].(uint64); ok {
-			nums[i] = n
-			continue
-		}
-		if nums[i], err = evmread.Uint64(r.Values[0], f.name); err != nil {
+		if nums[i], err = results[i].Uint64(f.name); err != nil {
 			return preamble{}, err
 		}
 	}
@@ -148,7 +140,7 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		MinBatchAge:          nums[4],
 		MaxUsersPerUpkeep:    nums[5],
 	}
-	if out.receiver.Paused, err = evmread.SingleBool(results[len(results)-1], "receiver.paused"); err != nil {
+	if out.receiver.Paused, err = results[len(results)-1].Bool("receiver.paused"); err != nil {
 		return preamble{}, err
 	}
 
@@ -166,15 +158,15 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		return preamble{}, fmt.Errorf("reading queue state and pause flags: %w", err)
 	}
 
-	if out.currentBatchID, err = evmread.SingleUint64(results[0], "currentBatchId"); err != nil {
+	if out.currentBatchID, err = results[0].Uint64("currentBatchId"); err != nil {
 		return preamble{}, err
 	}
-	if out.maxProcessing, err = evmread.SingleUint64(results[1], "MAX_BATCH_PROCESSING_TIME"); err != nil {
+	if out.maxProcessing, err = results[1].Uint64("MAX_BATCH_PROCESSING_TIME"); err != nil {
 		return preamble{}, err
 	}
 	out.protocolPaused = out.receiver.Paused
 	for i, label := range []string{"controller.paused", "exitQueue.paused", "amm.paused"} {
-		paused, err := evmread.SingleBool(results[2+i], label)
+		paused, err := results[2+i].Bool(label)
 		if err != nil {
 			return preamble{}, err
 		}
@@ -295,7 +287,7 @@ func readQueueState(
 			if err != nil {
 				return queue.State{}, err
 			}
-			if batch.UnprocessedCount, err = evmread.SingleUint64(results[i+1], "unprocessedUsersCount"); err != nil {
+			if batch.UnprocessedCount, err = results[i+1].Uint64("unprocessedUsersCount"); err != nil {
 				return queue.State{}, err
 			}
 			state.Batches[id] = batch

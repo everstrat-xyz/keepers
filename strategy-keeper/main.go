@@ -12,6 +12,7 @@ import (
 	"github.com/smartcontractkit/cre-sdk-go/cre/wasm"
 
 	"github.com/everstrat-xyz/keepers/pkg/chains"
+	"github.com/everstrat-xyz/keepers/pkg/crewrite"
 	"github.com/everstrat-xyz/keepers/pkg/envelope"
 	"github.com/everstrat-xyz/keepers/pkg/evmread"
 	"github.com/everstrat-xyz/keepers/pkg/strategy"
@@ -62,11 +63,7 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		return nil, err
 	}
 
-	tag := evmread.BlockFinalized
-	if config.BlockTag == string(evmread.BlockLatest) {
-		tag = evmread.BlockLatest
-	}
-	caller := evmread.New(runtime, deployment.Chain.Selector, tag)
+	caller := evmread.New(runtime, deployment.Chain.Selector, evmread.ParseBlockTag(config.BlockTag))
 	budget := evmread.NewBudget(reservedReads)
 
 	pre, err := readPreamble(caller, deployment.Registry, deployment.Receiver, budget)
@@ -142,7 +139,7 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		return nil, err
 	}
 
-	if err := report.envelope.Validate(envelope.ReceiverState{
+	if err := report.Envelope.Validate(envelope.ReceiverState{
 		ChainSelector: rc.ChainSelector,
 		LastSequence:  rc.LastSequence,
 		MaxReportAge:  rc.MaxReportAge,
@@ -164,14 +161,14 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 	if deployment.ShadowMode {
 		logger.Info("W2 shadow mode — report built but not written",
 			"action", decision.Action.String(),
-			"sequence", report.envelope.Sequence,
-			"reportBytes", len(report.encoded),
+			"sequence", report.Envelope.Sequence,
+			"reportBytes", len(report.Encoded),
 		)
 		result.Message = "shadow mode: " + decision.Reason
 		return result, nil
 	}
 
-	txHash, err := writeReport(runtime, caller, deployment.Receiver, report.encoded)
+	txHash, err := crewrite.Deliver(runtime, caller.Client(), deployment.Receiver, report.Encoded)
 	if err != nil {
 		return nil, err
 	}
@@ -182,16 +179,10 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 	return result, nil
 }
 
-// preparedReport pairs the encoded bytes with the envelope they came from.
-type preparedReport struct {
-	envelope envelope.Envelope
-	encoded  []byte
-}
-
-func buildReport(d strategy.Decision, rc receiverConfig, chainSelector, now uint64) (preparedReport, error) {
+func buildReport(d strategy.Decision, rc receiverConfig, chainSelector, now uint64) (envelope.Prepared, error) {
 	sequence, err := envelope.NextSequence(rc.LastSequence)
 	if err != nil {
-		return preparedReport{}, err
+		return envelope.Prepared{}, err
 	}
 
 	// Build takes an action and nothing else — the receiver recomputes every
@@ -202,14 +193,10 @@ func buildReport(d strategy.Decision, rc receiverConfig, chainSelector, now uint
 		ObservedAt:    now,
 	}.Build(d.Action)
 	if err != nil {
-		return preparedReport{}, err
+		return envelope.Prepared{}, err
 	}
 
-	decoded, err := envelope.Decode(encoded)
-	if err != nil {
-		return preparedReport{}, err
-	}
-	return preparedReport{envelope: decoded, encoded: encoded}, nil
+	return envelope.Prepare(encoded)
 }
 
 func InitWorkflow(config *Config, _ *slog.Logger, _ cre.SecretsProvider) (cre.Workflow[*Config], error) {

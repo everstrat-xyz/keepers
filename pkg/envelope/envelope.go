@@ -136,6 +136,26 @@ func Decode(report []byte) (Envelope, error) {
 	}, nil
 }
 
+// Prepared pairs encoded report bytes with the envelope they decode to.
+type Prepared struct {
+	Envelope Envelope
+	Encoded  []byte
+}
+
+// Prepare decodes freshly encoded report bytes back into the envelope they
+// carry, so the caller can Validate and write without decoding twice.
+//
+// The round trip is deliberate rather than wasteful: Validate then runs against
+// what the receiver will actually parse out of the payload, not against the
+// struct the workflow believes it encoded.
+func Prepare(encoded []byte) (Prepared, error) {
+	decoded, err := Decode(encoded)
+	if err != nil {
+		return Prepared{}, err
+	}
+	return Prepared{Envelope: decoded, Encoded: encoded}, nil
+}
+
 // ReceiverState is the live receiver state a report is validated against. Read
 // it from the receiver (`CHAIN_SELECTOR`, `lastSequence`, `MAX_REPORT_AGE`)
 // rather than assuming config values match the deployment.

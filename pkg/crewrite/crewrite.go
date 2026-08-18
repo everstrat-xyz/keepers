@@ -104,3 +104,39 @@ func Write(
 	}
 	return out, nil
 }
+
+// Deliver writes a report and applies the shared reading of the reply,
+// returning the transaction hash.
+//
+// A receiver revert is reported as a successful *tick* with a logged warning
+// rather than a workflow error: `KeeperExecutorNoUpkeepNeeded` means the
+// on-chain state moved between observation and delivery, which is the system
+// working as designed. Alerting belongs on the revert rate over time (W4,
+// issue #7), not on a single occurrence.
+//
+// Callers still gate on their own `shadowMode` before reaching this — see the
+// package comment.
+func Deliver(
+	runtime cre.Runtime,
+	client *evm.Client,
+	receiver common.Address,
+	payload []byte,
+) (string, error) {
+	res, err := Write(runtime, client, receiver, payload, 0)
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case res.Succeeded():
+		return res.TxHash.Hex(), nil
+	case res.ReceiverReverted:
+		runtime.Logger().Warn("receiver rejected the report — state moved between observation and delivery",
+			"txHash", res.TxHash.Hex(),
+			"error", res.ErrorMessage,
+		)
+		return res.TxHash.Hex(), nil
+	default:
+		return "", fmt.Errorf("report delivery failed: status=%s error=%q", res.TxStatus, res.ErrorMessage)
+	}
+}

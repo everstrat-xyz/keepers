@@ -346,3 +346,42 @@ func TestCanPlausiblyDeliverAgreesWithValidate(t *testing.T) {
 		t.Error("Validate() past the deadline succeeded, want ErrStaleReport")
 	}
 }
+
+// TestPrepareKeepsBytesAndEnvelopeInStep covers the pairing both keepers
+// validate through: the Envelope handed to Validate must be what actually
+// decodes out of the bytes handed to writeReport, not a parallel struct that
+// could drift from them.
+func TestPrepareKeepsBytesAndEnvelopeInStep(t *testing.T) {
+	original := envelope.Envelope{
+		ChainSelector: 16015286601757825753,
+		Sequence:      7,
+		ObservedAt:    1_700_000_000,
+		Action:        2,
+		Params:        []byte{0x01, 0x02},
+	}
+	encoded, err := original.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := envelope.Prepare(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(prepared.Encoded) != string(encoded) {
+		t.Error("Prepare changed the encoded bytes; the report written must be the bytes validated")
+	}
+	if prepared.Envelope.ChainSelector != original.ChainSelector ||
+		prepared.Envelope.Sequence != original.Sequence ||
+		prepared.Envelope.ObservedAt != original.ObservedAt ||
+		prepared.Envelope.Action != original.Action {
+		t.Errorf("Prepare decoded %+v, want %+v", prepared.Envelope, original)
+	}
+}
+
+func TestPrepareRejectsUndecodableBytes(t *testing.T) {
+	if _, err := envelope.Prepare([]byte{0x01, 0x02, 0x03}); err == nil {
+		t.Error("Prepare(garbage) = nil error, want a decode error")
+	}
+}

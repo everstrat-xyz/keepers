@@ -2,6 +2,7 @@ package evmread
 
 import (
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -40,6 +41,49 @@ type SubResult struct {
 	Success bool
 	// Values are the decoded return values. Empty when Success is false.
 	Values []any
+}
+
+// Address, Uint64, BigInt and Bool decode a sub-call that returns exactly one
+// value — the overwhelmingly common case in every read plan.
+//
+// The arity check is the point: a sub-call whose ABI changed shape returns a
+// different number of values, and without this the type assertion behind it
+// would panic on an index that is no longer there. Each returns an error naming
+// the field so a failed read says which one.
+
+func (r SubResult) Address(field string) (common.Address, error) {
+	if err := r.expectOne(field); err != nil {
+		return common.Address{}, err
+	}
+	return Address(r.Values[0], field)
+}
+
+func (r SubResult) Uint64(field string) (uint64, error) {
+	if err := r.expectOne(field); err != nil {
+		return 0, err
+	}
+	return Uint64(r.Values[0], field)
+}
+
+func (r SubResult) BigInt(field string) (*big.Int, error) {
+	if err := r.expectOne(field); err != nil {
+		return nil, err
+	}
+	return BigInt(r.Values[0], field)
+}
+
+func (r SubResult) Bool(field string) (bool, error) {
+	if err := r.expectOne(field); err != nil {
+		return false, err
+	}
+	return Bool(r.Values[0], field)
+}
+
+func (r SubResult) expectOne(field string) error {
+	if len(r.Values) != 1 {
+		return fmt.Errorf("evmread: %s returned %d values, want 1", field, len(r.Values))
+	}
+	return nil
 }
 
 // aggregate3Call mirrors Multicall3.Call3 for ABI packing.

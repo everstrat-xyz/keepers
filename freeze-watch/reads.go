@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	everabi "github.com/everstrat-xyz/keepers/contracts/evm/src/abi"
+	"github.com/everstrat-xyz/keepers/pkg/chains"
 	"github.com/everstrat-xyz/keepers/pkg/evmread"
 	"github.com/everstrat-xyz/keepers/pkg/freezewatch"
 	"github.com/everstrat-xyz/keepers/pkg/registry"
@@ -76,21 +77,21 @@ func readObservation(
 
 	flags := make([]bool, 4)
 	for i := range flags {
-		if flags[i], err = evmread.SingleBool(results[i], "paused"); err != nil {
+		if flags[i], err = results[i].Bool("paused"); err != nil {
 			return obs, err
 		}
 	}
 	obs.ControllerPaused, obs.ExitQueuePaused, obs.AMMPaused, obs.StrategyManagerPaused =
 		flags[0], flags[1], flags[2], flags[3]
 
-	currentBatchID, err := evmread.SingleUint64(results[4], "currentBatchId")
+	currentBatchID, err := results[4].Uint64("currentBatchId")
 	if err != nil {
 		return obs, err
 	}
-	if obs.MaxBatchProcessingTime, err = evmread.SingleUint64(results[5], "MAX_BATCH_PROCESSING_TIME"); err != nil {
+	if obs.MaxBatchProcessingTime, err = results[5].Uint64("MAX_BATCH_PROCESSING_TIME"); err != nil {
 		return obs, err
 	}
-	cursor, err := evmread.SingleUint64(results[6], "nextLiveBatchIdToProcess")
+	cursor, err := results[6].Uint64("nextLiveBatchIdToProcess")
 	if err != nil {
 		return obs, err
 	}
@@ -168,7 +169,7 @@ func readBatches(
 			if err != nil {
 				return err
 			}
-			count, err := evmread.SingleUint64(results[i+1], "unprocessedUsersCount")
+			count, err := results[i+1].Uint64("unprocessedUsersCount")
 			if err != nil {
 				return err
 			}
@@ -210,11 +211,11 @@ func readStrategies(
 		}
 		for i := 0; i < len(results); i += 2 {
 			addr := strategies[(done+i)/2]
-			paused, err := evmread.SingleBool(results[i], "strategy.paused")
+			paused, err := results[i].Bool("strategy.paused")
 			if err != nil {
 				return err
 			}
-			healthy, err := evmread.SingleBool(results[i+1], "strategy.isHealthy")
+			healthy, err := results[i+1].Bool("strategy.isHealthy")
 			if err != nil {
 				return err
 			}
@@ -294,20 +295,25 @@ func readOracle(
 // readKeepers checks receiver liveness for whichever executors are configured.
 func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation, b *evmread.Budget) {
 	type target struct {
-		name string
-		addr string
-		abi  everabi.Name
-		view string
+		name        string
+		configField string
+		addr        string
+		abi         everabi.Name
+		view        string
 	}
 	targets := []target{
-		{"queue-keeper", config.QueueExecutorAddress, everabi.ICREQueueExecutor, "queueUpkeepStatus"},
-		{"strategy-keeper", config.StrategyExecutorAddress, everabi.ICREStrategyExecutor, "strategyUpkeepStatus"},
+		{"queue-keeper", "queueExecutorAddress", config.QueueExecutorAddress,
+			everabi.ICREQueueExecutor, "queueUpkeepStatus"},
+		{"strategy-keeper", "strategyExecutorAddress", config.StrategyExecutorAddress,
+			everabi.ICREStrategyExecutor, "strategyUpkeepStatus"},
 	}
 
 	for _, t := range targets {
-		addr, err := chainsParseAddress(t.addr)
+		// Same validation W1 and W2 apply to their own receiver address, so an
+		// address W4 reports as healthy is one they could actually deliver to.
+		addr, err := chains.ParseAddress(t.configField, t.addr)
 		if err != nil {
-			continue // not deployed yet; nothing to watch
+			continue // not deployed yet, or a placeholder; nothing to watch
 		}
 		if !b.Take(1) {
 			return
@@ -335,12 +341,12 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 				k.Bound = author != (common.Address{})
 			}
 		}
-		if results[2].Success {
-			paused, err := evmread.SingleBool(results[2], "receiver.paused")
-			if err == nil {
-				k.Paused = paused
-			}
+	if results[2].Success {
+		paused, err := results[2].Bool("receiver.paused")
+		if err == nil {
+			k.Paused = paused
 		}
+	}
 		if results[3].Success && len(results[3].Values) > 0 {
 			if action, ok := results[3].Values[0].(uint8); ok {
 				k.UpkeepAvailable = action != 0
@@ -348,17 +354,4 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 		}
 		obs.Keepers = append(obs.Keepers, k)
 	}
-}
-
-// chainsParseAddress rejects the zero-address placeholder the scaffold configs
-// ship with, so an unconfigured receiver is skipped rather than watched.
-func chainsParseAddress(s string) (common.Address, error) {
-	if s == "" || !common.IsHexAddress(s) {
-		return common.Address{}, fmt.Errorf("not an address: %q", s)
-	}
-	addr := common.HexToAddress(s)
-	if addr == (common.Address{}) {
-		return common.Address{}, fmt.Errorf("zero address")
-	}
-	return addr, nil
 }
