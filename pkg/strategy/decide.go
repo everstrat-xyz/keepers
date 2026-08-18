@@ -28,6 +28,12 @@ type Strategy struct {
 	MaxWithdrawal *big.Int
 	// InDepositCooldown comes from StrategyManager, not the strategy.
 	InDepositCooldown bool
+	// DepositWeight comes from StrategyManager. A registered-but-unfunded
+	// strategy has weight 0 and can never take a deposit, so
+	// `_depositCapacityAvailable` requires it to be non-zero (contracts PR
+	// #43, R4-M-04) — without the gate W2 would recommend a DepositExcess the
+	// StrategyManager always no-ops.
+	DepositWeight uint8
 	// PendingPerformanceFeeETH is this strategy's accrued fee.
 	PendingPerformanceFeeETH *big.Int
 }
@@ -193,9 +199,15 @@ func (s State) totalMaxWithdrawal() *big.Int {
 }
 
 // depositCapacityAvailable mirrors _depositCapacityAvailable.
+//
+// depositWeight > 0 is the R4-M-04 gate: all-zero weights are
+// registered-but-unfunded — the StrategyManager skips them and refunds the
+// Controller, so proposing DepositExcess against only those is work the
+// receiver reverts on (the view says none is available).
 func (s State) depositCapacityAvailable() bool {
 	for _, st := range s.Strategies {
-		if !st.InDepositCooldown && st.Healthy && orZero(st.MaxDeposit).Sign() > 0 {
+		if !st.InDepositCooldown && st.Healthy &&
+			orZero(st.MaxDeposit).Sign() > 0 && st.DepositWeight > 0 {
 			return true
 		}
 	}
@@ -246,14 +258,17 @@ func (s State) exitLiquidityTopUp(balance, needs *big.Int) *big.Int {
 }
 
 // QueueBatch is the subset of a batch needed to price pending redemptions.
+//
+// TotalTokensToBurn is deliberately absent: the current batch's unpriced EVE is
+// not a liability until `priceBatch` (contracts PR #43, M-11), so W2 never
+// needs to read it.
 type QueueBatch struct {
-	ID                uint64
-	CanBeProcessed    bool
-	FinalEvePrice     *big.Int
-	TotalTokensToBurn *big.Int
-	PricedAt          uint64
-	UnprocessedCount  uint64
-	Requests          []QueueRequest
+	ID               uint64
+	CanBeProcessed   bool
+	FinalEvePrice    *big.Int
+	PricedAt         uint64
+	UnprocessedCount uint64
+	Requests         []QueueRequest
 }
 
 // QueueRequest is one unprocessed redemption request.
@@ -271,13 +286,16 @@ type QueueRequest struct {
 // when it validates the report. Widening the caps here would produce reports
 // the receiver rejects.
 //
-// The current batch contributes its whole `totalTokensToBurn` at the AMM's base
-// price, which is what the contract does regardless of the scan window.
+// The current batch is deliberately absent: until `priceBatch` it is still
+// cancellable equity (`liveRedemptionOffsets` is zero), so the contract counts
+// it as no liability at all. Sizing it at the live base price here would make
+// the workflow propose WithdrawShortfall in states where the receiver's own
+// recomputation sees none — and every report would revert with
+// KeeperExecutorNoUpkeepNeeded.
 func PendingRedemptionNeedsETH(
 	batches map[uint64]QueueBatch,
 	cursor, currentBatchID uint64,
 	maxBatchProcessingTime, now uint64,
-	eveBasePriceETH *big.Int,
 ) (*big.Int, error) {
 	needs := new(big.Int)
 
@@ -292,12 +310,6 @@ func PendingRedemptionNeedsETH(
 			return nil, err
 		}
 		needs.Add(needs, cost)
-	}
-
-	if current, ok := batches[currentBatchID]; ok {
-		if tokens := orZero(current.TotalTokensToBurn); tokens.Sign() > 0 {
-			needs.Add(needs, solmath.ConvertAssets(tokens, orZero(eveBasePriceETH)))
-		}
 	}
 	return needs, nil
 }

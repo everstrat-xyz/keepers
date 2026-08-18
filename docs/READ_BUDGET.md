@@ -65,7 +65,10 @@ which is why it is logged rather than silently tolerated.
 2. **Take budget before issuing**, and handle refusal by degrading.
 3. **Only read what can change the decision.** W1 reads the user list for the
    oldest processable batch only, because `Decide` cannot choose any other batch
-   in the same tick.
+   in the same tick. W2 reads `depositWeight` per strategy because
+   `_depositCapacityAvailable` gates on it, and no longer reads
+   `AMM.eveBasePriceInETH` at all — the current batch stopped being a liability
+   in contracts PR #43, so nothing in W2's model consumes a live price.
 4. **Update `TestReadPlanFitsBudget`** when the fixed plan changes, so the
    remaining scan depth stays visible.
 5. **Verify on the fork** ([LOCAL_FORK.md](LOCAL_FORK.md)). Every tick logs

@@ -20,13 +20,17 @@ import (
 //	1  multicall   registry lookups + receiver thresholds + receiver paused
 //	1  multicall   strategy list, fee bps, AMM float, queue cursor, pause flags
 //	1  balance     Controller ETH
-//	1  multicall   per-strategy health/capacity/cooldown/fees
+//	1  multicall   per-strategy health/capacity/cooldown/weight/fees
 //	1  multicall   queue batchInfo + counts for the bounded redemption scan
 //	M  multicall   unprocessedUsers + requestInfo for those batches
 //	1  call        strategyUpkeepStatus cross-check
 //
 // W2's redemption scan is capped at strategy.MaxBatchScan / MaxUsersCostScan on
 // purpose — matching the contract, not exceeding it. See strategy.Decide.
+//
+// `eveBasePriceInETH` is no longer in the preamble: the current batch's
+// unpriced EVE stopped being a liability in contracts PR #43 (M-11), and the
+// bounded scan needs no other price.
 
 const reservedReads = 2
 
@@ -62,7 +66,6 @@ type preamble struct {
 	currentBatchID uint64
 	queueCursor    uint64
 	maxProcessing  uint64
-	eveBasePrice   *big.Int
 	ammFreeBalance *big.Int
 	performanceBps *big.Int
 	strategies     []common.Address
@@ -170,7 +173,6 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 		out.exitQueue.Sub("MAX_BATCH_PROCESSING_TIME"),
 		out.queueExecutor.Sub("nextLiveBatchIdToProcess"),
 		out.amm.Sub("freeBalance"),
-		out.amm.Sub("eveBasePriceInETH"),
 		out.strategyManager.Sub("performanceFeeBps"),
 		out.strategyManager.Sub("strategies"),
 		out.controller.Paused(),
@@ -193,22 +195,19 @@ func readPreamble(c *evmread.Caller, reg, receiver common.Address, b *evmread.Bu
 	if out.ammFreeBalance, err = results[3].BigInt("freeBalance"); err != nil {
 		return preamble{}, err
 	}
-	if out.eveBasePrice, err = results[4].BigInt("eveBasePriceInETH"); err != nil {
+	if out.performanceBps, err = results[4].BigInt("performanceFeeBps"); err != nil {
 		return preamble{}, err
 	}
-	if out.performanceBps, err = results[5].BigInt("performanceFeeBps"); err != nil {
-		return preamble{}, err
+	if len(results[5].Values) != 1 {
+		return preamble{}, fmt.Errorf("strategies() returned %d values, want 1", len(results[5].Values))
 	}
-	if len(results[6].Values) != 1 {
-		return preamble{}, fmt.Errorf("strategies() returned %d values, want 1", len(results[6].Values))
-	}
-	if out.strategies, err = evmread.Addresses(results[6].Values[0], "strategies"); err != nil {
+	if out.strategies, err = evmread.Addresses(results[5].Values[0], "strategies"); err != nil {
 		return preamble{}, err
 	}
 
 	out.protocolPaused = out.receiver.Paused
 	for i, label := range []string{"controller.paused", "strategyManager.paused"} {
-		p, err := results[7+i].Bool(label)
+		p, err := results[6+i].Bool(label)
 		if err != nil {
 			return preamble{}, err
 		}
@@ -285,8 +284,8 @@ func readStrategies(c *evmread.Caller, p preamble, b *evmread.Budget) ([]strateg
 		return nil, nil
 	}
 
-	// Six sub-calls per strategy: paused, isHealthy, maxDeposit, maxWithdrawal,
-	// isStrategyInDepositCooldown, pendingPerformanceFeeInETH.
+	// Seven sub-calls per strategy: paused, isHealthy, maxDeposit, maxWithdrawal,
+	// isStrategyInDepositCooldown, depositWeight, pendingPerformanceFeeInETH.
 	var calls []evmread.SubCall
 	for _, addr := range p.strategies {
 		calls = append(calls,
@@ -295,6 +294,7 @@ func readStrategies(c *evmread.Caller, p preamble, b *evmread.Budget) ([]strateg
 			evmread.SubCall{To: addr, ABI: everabi.IStrategy, Method: "maxDeposit"},
 			evmread.SubCall{To: addr, ABI: everabi.IStrategy, Method: "maxWithdrawal"},
 			p.strategyManager.Sub("isStrategyInDepositCooldown", addr),
+			p.strategyManager.Sub("depositWeight", addr),
 			p.strategyManager.Sub("pendingPerformanceFeeInETH", addr),
 		)
 	}
@@ -314,7 +314,7 @@ func readStrategies(c *evmread.Caller, p preamble, b *evmread.Budget) ([]strateg
 
 	out := make([]strategy.Strategy, len(p.strategies))
 	for i, addr := range p.strategies {
-		base := i * 6
+		base := i * 7
 		s := strategy.Strategy{Address: addr}
 		var err error
 		if s.Paused, err = values[base].Bool("strategy.paused"); err != nil {
@@ -332,7 +332,10 @@ func readStrategies(c *evmread.Caller, p preamble, b *evmread.Budget) ([]strateg
 		if s.InDepositCooldown, err = values[base+4].Bool("isStrategyInDepositCooldown"); err != nil {
 			return nil, err
 		}
-		if s.PendingPerformanceFeeETH, err = values[base+5].BigInt("pendingPerformanceFeeInETH"); err != nil {
+		if s.DepositWeight, err = values[base+5].Uint8("depositWeight"); err != nil {
+			return nil, err
+		}
+		if s.PendingPerformanceFeeETH, err = values[base+6].BigInt("pendingPerformanceFeeInETH"); err != nil {
 			return nil, err
 		}
 		out[i] = s
@@ -356,8 +359,9 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 		last = first + strategy.MaxBatchScan
 	}
 
-	// Phase 1: batchInfo + count for each batch in the bounded window, plus the
-	// current batch (needed for its totalTokensToBurn).
+	// Phase 1: batchInfo + count for each batch in the bounded window. The
+	// current batch is included so its (empty) entry decodes like the rest,
+	// but it contributes nothing until priced — see strategy.PendingRedemptionNeedsETH.
 	var ids []uint64
 	var calls []evmread.SubCall
 	for id := first; id <= last; id++ {
@@ -401,7 +405,7 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 	}
 
 	// Phase 2: request detail for priced batches with work. The current batch
-	// is priced from totalTokensToBurn instead, so it is skipped here.
+	// is skipped: it is unpriced, and an unpriced batch is not a liability.
 	var userCalls []evmread.SubCall
 	var userIDs []uint64
 	for _, id := range ids {
@@ -473,7 +477,7 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 	}
 
 	needs, err := strategy.PendingRedemptionNeedsETH(
-		batches, p.queueCursor, p.currentBatchID, p.maxProcessing, p.blockTimestamp, p.eveBasePrice)
+		batches, p.queueCursor, p.currentBatchID, p.maxProcessing, p.blockTimestamp)
 	if err != nil {
 		return nil, false, err
 	}
@@ -492,20 +496,15 @@ func decodeQueueBatch(id uint64, vals []any) (strategy.QueueBatch, error) {
 	if err != nil {
 		return strategy.QueueBatch{}, err
 	}
-	totalTokensToBurn, err := evmread.BigInt(vals[2], "batchInfo.totalTokensToBurn")
-	if err != nil {
-		return strategy.QueueBatch{}, err
-	}
 	pricedAt, err := evmread.Uint64(vals[4], "batchInfo.pricedAt")
 	if err != nil {
 		return strategy.QueueBatch{}, err
 	}
 	return strategy.QueueBatch{
-		ID:                id,
-		CanBeProcessed:    canBeProcessed,
-		FinalEvePrice:     finalEvePrice,
-		TotalTokensToBurn: totalTokensToBurn,
-		PricedAt:          pricedAt,
+		ID:             id,
+		CanBeProcessed: canBeProcessed,
+		FinalEvePrice:  finalEvePrice,
+		PricedAt:       pricedAt,
 	}, nil
 }
 

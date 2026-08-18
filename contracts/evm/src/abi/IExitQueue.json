@@ -13,6 +13,19 @@
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "MAX_LIVE_PRICED_BATCHES",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "uint256",
@@ -78,6 +91,37 @@
   {
     "inputs": [],
     "name": "currentBatchId",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "liveRedemptionOffsets",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "liabilityETH",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "escrowedSupply",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "liveScanFromBatchId",
     "outputs": [
       {
         "internalType": "uint256",
@@ -390,6 +434,11 @@
   },
   {
     "inputs": [],
+    "name": "ExitQueueBatchExpired",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "ExitQueueBatchIsEmpty",
     "type": "error"
   },
@@ -416,6 +465,16 @@
   {
     "inputs": [],
     "name": "ExitQueueRequestNotInBatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ExitQueueTokensOverflow",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ExitQueueTooManyLivePricedBatches",
     "type": "error"
   },
   {

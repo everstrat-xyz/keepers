@@ -669,6 +669,11 @@
   },
   {
     "inputs": [],
+    "name": "CREReceiverFutureTimestamp",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "CREReceiverInvalidConfig",
     "type": "error"
   },

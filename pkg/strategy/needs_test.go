@@ -45,15 +45,52 @@ func TestPendingRedemptionNeedsETH(t *testing.T) {
 		1: pricedBatch(1, request(1), request(2)),
 		2: pricedBatch(2, request(3)),
 	}
-	// Batch 3 is the current one: contributes totalTokensToBurn at base price.
-	batches[3] = strategy.QueueBatch{ID: 3, TotalTokensToBurn: eth(4)}
+	// Batch 3 is the current one: unpriced, so it contributes nothing (M-11).
+	batches[3] = strategy.QueueBatch{ID: 3}
 
-	got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 3, maxProcTS, now, eth(1))
+	got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 3, maxProcTS, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := eth(10); got.Cmp(want) != 0 { // 1+2+3 queued, 4 current
+	if want := eth(6); got.Cmp(want) != 0 { // 1+2+3 queued priced; the unpriced current batch adds 0
 		t.Errorf("needs = %s, want %s", got, want)
+	}
+}
+
+// TestUnpricedCurrentBatchIsNotALiability is the M-11 pin: until `priceBatch`,
+// queued EVE is cancellable equity (`liveRedemptionOffsets` is zero), so
+// counting it at the live base price would let a queue-then-cancel loop pull
+// LP via WithdrawShortfall — and would propose shortfalls the receiver's own
+// recomputation rejects.
+func TestUnpricedCurrentBatchIsNotALiability(t *testing.T) {
+	current := strategy.QueueBatch{
+		ID:             2,
+		CanBeProcessed: false, // unpriced
+	}
+	got, err := strategy.PendingRedemptionNeedsETH(
+		map[uint64]strategy.QueueBatch{2: current}, 1, 2, maxProcTS, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := new(big.Int); got.Cmp(want) != 0 {
+		t.Errorf("needs = %s, want 0 — the unpriced batch is not a keeper liability until priceBatch", got)
+	}
+}
+
+// TestPricedBatchBecomesALiabilityWhenItEntersTheWindow covers the other half
+// of the M-11 semantics: once `priceBatch` runs, the batch sits in
+// [cursor, currentBatchId) and is costed at finalEvePrice.
+func TestPricedBatchBecomesALiabilityWhenItEntersTheWindow(t *testing.T) {
+	batches := map[uint64]strategy.QueueBatch{
+		1: pricedBatch(1, request(5)),
+	}
+	// currentBatchId moved past it: batch 1 is now priced and in-window.
+	got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 2, maxProcTS, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := eth(5); got.Cmp(want) != 0 {
+		t.Errorf("needs = %s, want %s — a priced in-window batch must be costed at finalEvePrice", got, want)
 	}
 }
 
@@ -64,7 +101,7 @@ func TestBatchSettlementCostSumsWithoutABudget(t *testing.T) {
 	batches := map[uint64]strategy.QueueBatch{
 		1: pricedBatch(1, request(1), request(1000), request(1)),
 	}
-	got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 2, maxProcTS, now, eth(1))
+	got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 2, maxProcTS, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +157,7 @@ func TestBatchSettlementCostSkips(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := strategy.PendingRedemptionNeedsETH(
-				map[uint64]strategy.QueueBatch{1: tt.batch}, 1, 2, maxProcTS, now, eth(1))
+				map[uint64]strategy.QueueBatch{1: tt.batch}, 1, 2, maxProcTS, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,7 +189,7 @@ func TestSlippedRequestsAreExcluded(t *testing.T) {
 	b.FinalEvePrice = wei("900000000000000000") // 10% below
 
 	got, err := strategy.PendingRedemptionNeedsETH(
-		map[uint64]strategy.QueueBatch{1: b}, 1, 2, maxProcTS, now, eth(1))
+		map[uint64]strategy.QueueBatch{1: b}, 1, 2, maxProcTS, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +215,7 @@ func TestScanCapsMatchTheContract(t *testing.T) {
 		for id := uint64(1); id <= 40; id++ {
 			batches[id] = pricedBatch(id, request(1))
 		}
-		got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 41, maxProcTS, now, eth(1))
+		got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 41, maxProcTS, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,7 +231,7 @@ func TestScanCapsMatchTheContract(t *testing.T) {
 		}
 		b := pricedBatch(1, reqs...)
 		got, err := strategy.PendingRedemptionNeedsETH(
-			map[uint64]strategy.QueueBatch{1: b}, 1, 2, maxProcTS, now, eth(1))
+			map[uint64]strategy.QueueBatch{1: b}, 1, 2, maxProcTS, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -211,7 +248,7 @@ func TestPendingRedemptionNeedsETHHandlesGaps(t *testing.T) {
 		1: pricedBatch(1, request(1)),
 		3: pricedBatch(3, request(1)),
 	}
-	got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 4, maxProcTS, now, eth(1))
+	got, err := strategy.PendingRedemptionNeedsETH(batches, 1, 4, maxProcTS, now)
 	if err != nil {
 		t.Fatal(err)
 	}
