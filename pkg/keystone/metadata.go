@@ -7,6 +7,11 @@
 // reviewed from the workflow side, instead of being derived by hand and pasted
 // into a setter transaction.
 //
+// CUTOVER TOOLING, NOT RUNTIME: no workflow imports this package. It is here
+// so the issue #6 binding values can be computed and reviewed next to the code
+// that must agree with them. Once the cutover lands, move it to a cmd/ tool
+// rather than leaving it to imply runtime use.
+//
 // # Wire layout
 //
 // The receiver copies calldata to memory and reads:

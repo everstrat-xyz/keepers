@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/smartcontractkit/cre-sdk-go/capabilities/scheduler/cron"
 	"github.com/smartcontractkit/cre-sdk-go/cre"
@@ -144,6 +145,17 @@ func onCronTrigger(config *Config, runtime cre.Runtime, _ *cron.Payload) (*Resul
 		MaxReportAge:  rc.MaxReportAge,
 	}, runtime.Now()); err != nil {
 		return nil, fmt.Errorf("refusing to emit a report the receiver would reject: %w", err)
+	}
+
+	// The staleness guard passes at build time and can still lose the race:
+	// MAX_REPORT_AGE is consumed by consensus and transmission, not by the
+	// build. Skip a report that would only just make it rather than spend a
+	// delivery on the deadline (envelope.DeliveryMargin).
+	if !envelope.CanPlausiblyDeliver(time.Unix(int64(state.Now), 0), rc.MaxReportAge, runtime.Now()) {
+		logger.Warn("W2 skipping report — MAX_REPORT_AGE budget nearly spent",
+			"observedAt", state.Now, "maxReportAge", rc.MaxReportAge)
+		result.Message = "skipped: report age budget nearly spent: " + decision.Reason
+		return result, nil
 	}
 
 	if deployment.ShadowMode {

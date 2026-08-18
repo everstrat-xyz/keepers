@@ -161,6 +161,34 @@ func TestSubResultAccessorsRejectWrongArity(t *testing.T) {
 	}
 }
 
+// TestSubResultAccessorsRejectWrongTypes and the overflow case below are the
+// silent-corruption traps the accessors close: a value that arrives in the
+// wrong Go shape means the ABI and the reader disagree, and a uint256 that
+// does not fit uint64 would otherwise truncate into a batch id or timestamp.
+// Every error has to name the field, or a failure points at sub-call index N.
+func TestSubResultAccessorsRejectWrongTypes(t *testing.T) {
+	if _, err := (evmread.SubResult{Success: true, Values: []any{true}}).Uint64("cursor"); err == nil {
+		t.Error("Uint64 on a bool = nil error, want a type error naming cursor")
+	}
+	if _, err := (evmread.SubResult{Success: true, Values: []any{big.NewInt(1)}}).Bool("receiver.paused"); err == nil {
+		t.Error("Bool on an integer = nil error, want a type error naming receiver.paused")
+	}
+	if _, err := (evmread.SubResult{Success: true, Values: []any{false}}).BigInt("controllerBalance"); err == nil {
+		t.Error("BigInt on a bool = nil error, want a type error naming controllerBalance")
+	}
+	if _, err := (evmread.SubResult{Success: true,
+		Values: []any{"0xcA11bde05977b3631167028862bE2a173976CA11"}}).Address("exitQueue"); err == nil {
+		t.Error("Address on a string = nil error, want a type error naming exitQueue")
+	}
+}
+
+func TestSubResultUint64RejectsOverflow(t *testing.T) {
+	overflow := evmread.SubResult{Success: true, Values: []any{new(big.Int).Lsh(big.NewInt(1), 64)}}
+	if _, err := overflow.Uint64("cursor"); err == nil {
+		t.Error("Uint64 on 2^64 = nil error, want an overflow error; truncating would corrupt a batch id")
+	}
+}
+
 func TestSubResultAccessorsDecodeSingleValues(t *testing.T) {
 	got, err := evmread.SubResult{Success: true, Values: []any{big.NewInt(7)}}.Uint64("currentBatchId")
 	if err != nil {

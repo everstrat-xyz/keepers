@@ -234,6 +234,12 @@ func Addresses(v any, field string) ([]common.Address, error) {
 	return a, nil
 }
 
+// ---------- single-value helpers for multicall results ----------
+//
+// Sub-calls that expect exactly one return value decode through the SubResult
+// methods (Uint64, BigInt, Bool, Address) in multicall.go, which add the arity
+// check on top of the converters above.
+
 // AwaitAll resolves a slice of already-dispatched promises, returning the first
 // error with its index.
 //

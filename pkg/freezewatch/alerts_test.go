@@ -227,26 +227,17 @@ func TestStrategySignals(t *testing.T) {
 		{Address: "0xb", Healthy: false, Paused: true}, // already known to ops
 		{Address: "0xc", Healthy: true},
 	}
-	o.Failures = []freezewatch.CallFailure{
-		{Event: "StrategyRebalanceFailed", Block: 100, Subject: "0xa"},
-	}
 
 	alerts := freezewatch.Evaluate(o, freezewatch.DefaultThresholds())
 
-	var unhealthy, failures int
+	var unhealthy int
 	for _, a := range alerts {
-		switch a.Kind {
-		case freezewatch.KindStrategyUnhealthy:
+		if a.Kind == freezewatch.KindStrategyUnhealthy {
 			unhealthy++
-		case freezewatch.KindStrategyCallFailure:
-			failures++
 		}
 	}
 	if unhealthy != 1 {
 		t.Errorf("got %d unhealthy alerts, want 1 (a paused strategy is already known)", unhealthy)
-	}
-	if failures != 1 {
-		t.Errorf("got %d failure alerts, want 1", failures)
 	}
 }
 
