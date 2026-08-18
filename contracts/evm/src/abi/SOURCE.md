@@ -8,13 +8,15 @@ local edit silently desynchronises W1/W2 from the deployed receivers.
 | Field | Value |
 | --- | --- |
 | Source repo | `everstrat-xyz/contracts` |
-| Commit | `b9caf2e9c9c50a4a6c2640dfc33f0da19b515b48` |
-| Branch at vendoring time | `feat/cre-keeper-executors` (PR for contracts [#4](https://github.com/everstrat-xyz/contracts/issues/4) / [#5](https://github.com/everstrat-xyz/contracts/pull/5)) |
-| Vendored on | 2026-08-12 |
+| Commit | `9f29cde9d18c47a966b1b41e59b0ebad52524931` |
+| Branch at vendoring time | `main` (includes PRs [#39](https://github.com/everstrat-xyz/contracts/pull/39)–[#43](https://github.com/everstrat-xyz/contracts/pull/43): keeper liability, Controller actuals, deposit-capacity gating) |
+| Vendored on | 2026-08-18 |
 
-> The receiver contracts had not landed on `contracts@main` when these were
-> vendored. Re-run the refresh below once they merge, and again before the
-> Sepolia cutover ([issue #6](https://github.com/everstrat-xyz/keepers/issues/6)).
+> The key change in [#43](https://github.com/everstrat-xyz/contracts/pull/43)
+> for these ABIs: `IController`'s deposit/withdraw/harvest functions now return
+> the StrategyManager actual, and the full-batch `processRequests(batchId)` is a
+> no-op on an empty batch. Refresh again before the Sepolia cutover
+> ([issue #6](https://github.com/everstrat-xyz/keepers/issues/6)).
 
 ## Contents
 

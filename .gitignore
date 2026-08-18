@@ -36,6 +36,10 @@ go.work.sum
 binary.wasm*
 .cre/
 
+# Scratch worktree used when refreshing vendored ABIs (see
+# contracts/evm/src/abi/SOURCE.md) — never commit it.
+.vendor-tmp/
+
 # Editor/IDE
 # .idea/
 # .vscode/

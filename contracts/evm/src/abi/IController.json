@@ -46,7 +46,13 @@
       }
     ],
     "name": "depositToStrategies",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "actualDeposited",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -69,7 +75,13 @@
       }
     ],
     "name": "depositToStrategies",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "actualDeposited",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -87,7 +99,13 @@
       }
     ],
     "name": "depositToStrategy",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "actualDeposited",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -112,14 +130,36 @@
       }
     ],
     "name": "harvestPerformanceFeeFromStrategies",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "eveAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "feeETHEquivalent",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
   {
     "inputs": [],
     "name": "harvestPerformanceFeeFromStrategies",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "eveAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "feeETHEquivalent",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -132,7 +172,18 @@
       }
     ],
     "name": "harvestPerformanceFeeFromStrategy",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "eveAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "feeETHEquivalent",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -284,7 +335,13 @@
       }
     ],
     "name": "withdrawFromStrategies",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "actualWithdrawn",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -307,7 +364,13 @@
       }
     ],
     "name": "withdrawFromStrategies",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "actualWithdrawn",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -325,7 +388,13 @@
       }
     ],
     "name": "withdrawFromStrategy",
-    "outputs": [],
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "actualWithdrawn",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },

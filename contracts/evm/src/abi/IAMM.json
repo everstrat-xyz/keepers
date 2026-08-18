@@ -455,6 +455,11 @@
   },
   {
     "inputs": [],
+    "name": "AMMEscrowExceedsSupply",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "AMMInsufficientDeposit",
     "type": "error"
   },

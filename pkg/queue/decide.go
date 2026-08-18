@@ -122,9 +122,12 @@ func (s State) Batch(id uint64) (Batch, bool) {
 
 // IsBatchSkippable mirrors CREQueueExecutor._isBatchSkippable.
 //
-// A batch is skippable when it is fully processed, or when it was priced and
-// has since run past MAX_BATCH_PROCESSING_TIME (the escape hatch, after which
-// users close their own requests and the keeper must not touch the batch).
+// The unpriced guard comes first, so an unpriced batch — including the current
+// one, even when still empty — is never skippable: it can still receive
+// requests and must be priced first. A priced batch is skippable when it is
+// fully processed, or when it has run past MAX_BATCH_PROCESSING_TIME (the
+// escape hatch, after which users close their own requests and the keeper must
+// not touch the batch).
 //
 // An unreadable batch is *not* skippable: skipping past a batch we could not
 // read would advance the cursor over live work.
@@ -133,11 +136,11 @@ func (s State) IsBatchSkippable(id uint64) bool {
 	if !ok {
 		return false
 	}
+	if !b.CanBeProcessed {
+		return false
+	}
 	if b.UnprocessedCount == 0 {
 		return true
-	}
-	if !b.CanBeProcessed || b.PricedAt == 0 {
-		return false
 	}
 	return s.Now > b.PricedAt+s.MaxBatchProcessingTime
 }
@@ -150,12 +153,24 @@ func (s State) IsBatchSkippable(id uint64) bool {
 // request to fit cheaper ones behind it. Reproducing the break (rather than
 // "fit as many as possible") is what keeps the claim acceptable to the
 // receiver.
+//
+// A batch past its processing window returns zero on both sides: the receiver
+// cannot settle it, and users recover via the escape hatch.
 func (s State) AffordableRequests(id uint64) (uint64, error) {
 	b, ok := s.Batches[id]
 	if !ok {
 		return 0, nil
 	}
-	if !b.CanBeProcessed || b.UnprocessedCount == 0 {
+	if !b.CanBeProcessed {
+		return 0, nil
+	}
+	// Priced but past the processing window: `pullRequest` would revert
+	// `ExitQueueBatchExpired`, so the receiver's own walk returns zero here and
+	// the batch is the users' to close, not the keeper's.
+	if b.PricedAt > 0 && s.Now > b.PricedAt+s.MaxBatchProcessingTime {
+		return 0, nil
+	}
+	if b.UnprocessedCount == 0 {
 		return 0, nil
 	}
 

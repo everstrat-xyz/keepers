@@ -19,7 +19,8 @@ func addr(n byte) common.Address {
 	return a
 }
 
-// healthyStrategy has capacity both ways and no accrued fee.
+// healthyStrategy has capacity both ways, a non-zero deposit weight, and no
+// accrued fee.
 func healthyStrategy(n byte) strategy.Strategy {
 	return strategy.Strategy{
 		Address:                  addr(n),
@@ -28,6 +29,7 @@ func healthyStrategy(n byte) strategy.Strategy {
 		MaxDeposit:               eth(100),
 		MaxWithdrawal:            eth(100),
 		InDepositCooldown:        false,
+		DepositWeight:            100,
 		PendingPerformanceFeeETH: new(big.Int),
 	}
 }
@@ -208,6 +210,17 @@ func TestDecideMatchesContractGuards(t *testing.T) {
 			mut: func(s *strategy.State) {
 				s.ControllerBalance = eth(100)
 				s.Strategies[0].MaxDeposit = new(big.Int)
+			},
+			want: strategy.ActionNone,
+		},
+		{
+			// R4-M-04: an all-zero deposit weight is registered-but-unfunded.
+			// The StrategyManager would no-op the deposit and refund the
+			// Controller, so the receiver's view recommends nothing here.
+			name: "deposit is skipped when every strategy has depositWeight 0",
+			mut: func(s *strategy.State) {
+				s.ControllerBalance = eth(100)
+				s.Strategies[0].DepositWeight = 0
 			},
 			want: strategy.ActionNone,
 		},

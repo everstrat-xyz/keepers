@@ -108,6 +108,14 @@ func TestIsBatchSkippable(t *testing.T) {
 			want: false,
 		},
 		{
+			// Contracts PR #43 reordered the guard: an unpriced batch is never
+			// skippable even when empty, because it can still receive requests
+			// and must be priced first.
+			name: "unpriced empty batch is not skippable",
+			mut:  func(b *queue.Batch) { b.CanBeProcessed = false; b.PricedAt = 0; b.UnprocessedCount = 0 },
+			want: false,
+		},
+		{
 			name: "expired batch past MAX_BATCH_PROCESSING_TIME is skippable",
 			mut:  func(b *queue.Batch) { b.PricedAt = nowTS - threeDS - 1 },
 			want: true,
@@ -207,6 +215,19 @@ func TestAffordableRequests(t *testing.T) {
 			batch: func() queue.Batch {
 				b := batch(1)
 				b.UnprocessedCount = 0
+				return b
+			}(),
+			balance: eth(1000),
+			want:    0,
+		},
+		{
+			// Contracts PR #43: a batch past its processing window returns
+			// zero on both sides — `pullRequest` reverts `ExitQueueBatchExpired`,
+			// so no balance, however large, can settle it.
+			name: "expired batch affords nothing regardless of balance",
+			batch: func() queue.Batch {
+				b := batch(1, req(1, 1))
+				b.PricedAt = nowTS - threeDS - 1
 				return b
 			}(),
 			balance: eth(1000),

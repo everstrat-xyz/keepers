@@ -198,8 +198,18 @@ agreed with the contract's `pendingRedemptionNeedsETH()` **to the wei**
 (999999999999999999), which is the strongest available check on the redemption
 cost model.
 
+Note the M-11 boundary (contracts PR #43): only batches in
+`[nextLiveBatchIdToProcess, currentBatchId)` are liabilities. A queued but
+**unpriced** batch contributes zero on both sides — before `priceBatch` it is
+cancellable equity — so funding the Controller with a live queue and *not*
+pricing it must also yield `match` with no WithdrawShortfall. Once priced (step
+(c) in the W1 walkthrough above moves the batch into the window), the same
+reproduction must again agree to the wei.
+
 Registering a strategy would exercise the remaining branches; that needs
-`DeployUniCLStrat` plus a timelocked `addStrategy`, and is not covered here.
+`DeployUniCLStrat` plus a timelocked `addStrategy` (give it a **non-zero**
+`depositWeight` — an all-zero weight now correctly suppresses `DepositExcess`),
+and is not covered here.
 
 ## Read budget
 

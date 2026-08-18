@@ -43,7 +43,7 @@ type SubResult struct {
 	Values []any
 }
 
-// Address, Uint64, BigInt and Bool decode a sub-call that returns exactly one
+// Address, Uint64, Uint8, BigInt and Bool decode a sub-call that returns exactly one
 // value — the overwhelmingly common case in every read plan.
 //
 // The arity check is the point: a sub-call whose ABI changed shape returns a
@@ -63,6 +63,19 @@ func (r SubResult) Uint64(field string) (uint64, error) {
 		return 0, err
 	}
 	return Uint64(r.Values[0], field)
+}
+
+// Uint8 decodes a Solidity uint8 (e.g. StrategyManager.depositWeight), which
+// go-ethereum unpacks as a native uint8 rather than a big.Int.
+func (r SubResult) Uint8(field string) (uint8, error) {
+	if err := r.expectOne(field); err != nil {
+		return 0, err
+	}
+	v, ok := r.Values[0].(uint8)
+	if !ok {
+		return 0, fmt.Errorf("evmread: %s is %T, want uint8", field, r.Values[0])
+	}
+	return v, nil
 }
 
 func (r SubResult) BigInt(field string) (*big.Int, error) {

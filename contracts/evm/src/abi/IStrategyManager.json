@@ -1199,6 +1199,11 @@
   },
   {
     "inputs": [],
+    "name": "StrategyManagerEscrowExceedsSupply",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "StrategyManagerFeeMintOverflow",
     "type": "error"
   },
@@ -1262,6 +1267,11 @@
   {
     "inputs": [],
     "name": "StrategyManagerNoStrategiesRegistered",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "StrategyManagerQueuedLiabilityExceedsNAV",
     "type": "error"
   },
   {

@@ -1,6 +1,7 @@
 package abi_test
 
 import (
+	"strings"
 	"testing"
 
 	everabi "github.com/everstrat-xyz/keepers/contracts/evm/src/abi"
@@ -69,6 +70,15 @@ func TestReceiverSurface(t *testing.T) {
 				"unprocessedUsersCount", "requestInfo", "MAX_BATCH_PROCESSING_TIME",
 			},
 		},
+		{
+			abi: everabi.IStrategyManager,
+			methods: []string{
+				// depositWeight gates _depositCapacityAvailable since contracts
+				// PR #43 (R4-M-04); W2 reads it per strategy.
+				"strategies", "depositWeight", "isStrategyInDepositCooldown",
+				"pendingPerformanceFeeInETH", "performanceFeeBps",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -118,6 +128,48 @@ func TestOnReportSignature(t *testing.T) {
 	}
 	if got, want := m.Sig, "onReport(bytes,bytes)"; got != want {
 		t.Errorf("onReport signature = %s, want %s", got, want)
+	}
+}
+
+// TestControllerActualReturnShapes pins the R4-L-05 ABI change: Controller
+// deposit/withdraw/harvest now return the StrategyManager actual, which
+// CREStrategyExecutor emits on StrategyUpkeepPerformed. The keepers never call
+// these (the receiver does), but a return-shape drift here means the vendored
+// ABI is stale relative to the deployed executor.
+//
+// Overloads are keyed by name in the parsed ABI (go-ethereum renames the second
+// occurrence), so this walks every entry and asserts none of the keeper-facing
+// set is void.
+func TestControllerActualReturnShapes(t *testing.T) {
+	wantReturns := map[string]string{
+		"depositToStrategies":                 "uint256",
+		"depositToStrategy":                   "uint256",
+		"withdrawFromStrategies":              "uint256",
+		"withdrawFromStrategy":                "uint256",
+		"harvestPerformanceFeeFromStrategy":   "uint256,uint256",
+		"harvestPerformanceFeeFromStrategies": "uint256,uint256",
+	}
+
+	parsed, err := everabi.Get(everabi.IController)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, m := range parsed.Methods {
+		base := strings.TrimRight(name, "0123456789")
+		want, keeperFacing := wantReturns[base]
+		if !keeperFacing {
+			continue
+		}
+		var parts []string
+		for _, o := range m.Outputs {
+			parts = append(parts, o.Type.String())
+		}
+		if got := strings.Join(parts, ","); got != want {
+			t.Errorf("%s returns (%s), want (%s) — a void return means the vendored ABI predates contracts PR #43", name, got, want)
+		}
+		if _, ok := wantReturns[name]; !ok && base != name {
+			t.Logf("overload %s checked under %s", name, base)
+		}
 	}
 }
 

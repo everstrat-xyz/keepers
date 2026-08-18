@@ -11,7 +11,8 @@ On-chain consumer: `CREStrategyExecutor`.
 1. Resolve Controller / ExitQueue / AMM / StrategyManager / queue executor from
    the **Registry**.
 2. Read the receiver's thresholds, `lastSyncAt`, `lastSequence` and pause flags.
-3. Read per-strategy health, capacity, deposit cooldown and accrued fees.
+3. Read per-strategy health, capacity, deposit cooldown, `depositWeight` and
+   accrued fees.
 4. Reproduce `_pendingRedemptionNeedsETH` from raw queue reads.
 5. Pick an action in the contract's exact priority order — Rebalance →
    WithdrawShortfall → ProvideExitLiquidity → DepositExcess →
@@ -39,6 +40,31 @@ in the contracts, not in the workflows.**
 So `pkg/strategy` mirrors the contract's caps exactly (`TestScanCapsMatchTheContract`
 fails if they drift). W2's value is running the decision off-chain against live
 state, cross-checking the view, and being the thing that can deliver a report.
+
+## Liability boundaries mirrored from the contracts
+
+Two contract semantics (PR [#43](https://github.com/everstrat-xyz/contracts/pull/43))
+are pinned by tests here because getting them wrong produces reports the
+receiver reverts on:
+
+- **The current unpriced batch is not a liability (M-11).** Until `priceBatch`
+  the queued EVE is cancellable equity (`liveRedemptionOffsets` is zero), so
+  `PendingRedemptionNeedsETH` counts only `[cursor, currentBatchId)` priced
+  batches. Priced at the live base price instead, a queue-then-cancel loop
+  could pull LP via WithdrawShortfall — and W2 would propose shortfalls the
+  receiver's recomputation rejects.
+- **`DepositExcess` needs `depositWeight > 0` (R4-M-04).** An all-zero deposit
+  weight is registered-but-unfunded: the StrategyManager skips it and refunds
+  the Controller. `depositCapacityAvailable` requires a non-zero weight so W2
+  never recommends work the receiver sees as unavailable.
+
+## Post-execution receipts (R4-L-05)
+
+`StrategyUpkeepPerformed` now emits the Controller return — ETH actually moved,
+or the settled `feeETHEquivalent` for Harvest — not the pre-call estimate. A
+`0` amount is a **successful no-op** (SM try/catch underfill), not a failure;
+alerting on `amount == 0` as a revert would misread it. The report itself still
+carries action-only params, so nothing changes on W2's wire format.
 
 ## Constraints worth knowing before editing
 
