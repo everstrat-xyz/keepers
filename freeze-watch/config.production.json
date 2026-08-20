@@ -1,0 +1,16 @@
+{
+  "schedule": "0 */10 * * * *",
+  "chainName": "ethereum-testnet-sepolia",
+  "chainSelector": "16015286601757825753",
+  "registryAddress": "0x0000000000000000000000000000000000000000",
+  "queueExecutorAddress": "0x0000000000000000000000000000000000000000",
+  "strategyExecutorAddress": "0x0000000000000000000000000000000000000000",
+  "shadowMode": true,
+  "maxReportAgeSeconds": 3600,
+  "oracleStaleAfterSeconds": 10800,
+  "escapeHatchWarnWithinSeconds": 43200,
+  "keeperStalledAfterSeconds": 21600,
+  "backlogWarnBatches": 10,
+  "dryRun": false,
+  "blockTag": "finalized"
+}

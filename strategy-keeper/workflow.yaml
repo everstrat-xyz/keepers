@@ -1,0 +1,31 @@
+# W2 — strategy-keeper (CREStrategyExecutor consumer)
+
+# Local anvil fork of Sepolia (see docs/LOCAL_FORK.md). Addresses come from the
+# documented DeployAll recipe, so they are reproducible rather than someone's
+# private deployment.
+local-settings:
+  user-workflow:
+    workflow-name: "everstrat-strategy-keeper-local"
+    deployment-registry: "private"
+  workflow-artifacts:
+    workflow-path: "."
+    config-path: "./config.local.json"
+    secrets-path: ""
+
+staging-settings:
+  user-workflow:
+    workflow-name: "everstrat-strategy-keeper-staging"
+    deployment-registry: "private"
+  workflow-artifacts:
+    workflow-path: "."
+    config-path: "./config.staging.json"
+    secrets-path: ""
+
+production-settings:
+  user-workflow:
+    workflow-name: "everstrat-strategy-keeper-production"
+    deployment-registry: "private"
+  workflow-artifacts:
+    workflow-path: "."
+    config-path: "./config.production.json"
+    secrets-path: ""

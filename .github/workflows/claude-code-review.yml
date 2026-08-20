@@ -1,0 +1,144 @@
+name: Claude PR Review
+
+# Automated review on every PR, mirroring everstrat-xyz/contracts.
+#
+# The contracts repo pairs this with a mermaid architecture checker; there is no
+# equivalent here. What this repo has instead is a set of constraints that are
+# invisible to a generic reviewer and expensive to get wrong — CRE's read
+# budget, the block-timestamp rule, the no-amounts guarantee — so the prompt
+# names them explicitly and points at CLAUDE.md for the reasoning.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: string
+
+jobs:
+  claude-review:
+    name: review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Secrets cannot be used in a job-level `if`, so the gate is a step.
+      #
+      # A missing token skips the review with a warning annotation rather than
+      # passing quietly. This repo has already been burned by a job that
+      # reported success while doing nothing — see CLAUDE.md.
+      - name: Check for the Claude token
+        id: creds
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN}" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Claude review skipped::CLAUDE_CODE_OAUTH_TOKEN is not set on this repository, so no automated review ran."
+            {
+              echo "### :warning: Claude review skipped"
+              echo
+              echo "\`CLAUDE_CODE_OAUTH_TOKEN\` is not set in this repository's secrets."
+              echo "**This PR was not reviewed automatically.**"
+              echo
+              echo "Add it with \`claude setup-token\`, then:"
+              echo '```'
+              echo "gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo everstrat-xyz/keepers"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude Code Review
+        if: steps.creds.outputs.run == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+
+            Review this pull request. Read `CLAUDE.md` first — it holds the
+            constraints below and the reasoning behind them, and it is the
+            standard this repo is held to.
+
+            These workflows run on a decentralised oracle network and deliver
+            signed reports to contracts that hold `KEEPER_ROLE` over user funds.
+            A bug here does not crash a server; it either moves money wrongly or
+            silently stops moving it at all. Review accordingly.
+
+            ## Check these repo-specific invariants first
+
+            A generic review will miss all of them.
+
+            1. **No amounts in reports.** A report must never carry an
+               authoritative ETH amount, NAV, or price. Flag any new params
+               field, any `*big.Int` reaching a report builder, or any
+               relaxation of `queue.DecodeParams`'s exact-length check.
+
+            2. **Chain reads are capped at 15 per execution** (CRE
+               `ChainRead.CallLimit`, 5 kB response cap). Exceeding it aborts the
+               whole tick. Flag a `Call`/`Aggregate` inside a loop, a read added
+               to a fixed preamble without updating `TestReadPlanFitsBudget`, or
+               a plan that aborts instead of degrading when the budget runs out.
+
+            3. **The clock must be the observed block's, not `runtime.Now()`.**
+               The receiver rejects `observedAt > block.timestamp` with zero
+               tolerance, so wall-clock time fails every report. Flag any new
+               `runtime.Now()` used for `observedAt` or for age comparisons
+               against chain state.
+
+            4. **Sequence is read from the receiver every tick**, never held in a
+               local counter.
+
+            5. **W1 may scan deeper than the contract; W2 may not.** W1's
+               receiver validates per batch with no window, so a deeper scan is a
+               genuine win. W2's receiver re-derives with the same bounded
+               helpers, so being "more exact" makes every report revert. Flag any
+               change that widens W2's scan caps or narrows W1's.
+
+            6. **W4 (`freeze-watch/`) must not be able to write.** Flag any
+               import of `pkg/crewrite` or `pkg/envelope` there.
+
+            7. **Golden test values must come from Solidity** (`cast`, `chisel`),
+               never from Go. A round-trip against our own encoder proves
+               nothing. Flag hand-computed fixtures.
+
+            8. **Vendored ABIs are never hand-edited.** Flag a changed
+               `contracts/evm/src/abi/*.json` without a matching commit-hash
+               update in `SOURCE.md`.
+
+            ## Then the ordinary review
+
+            Correctness bugs, error handling that loses information, test
+            coverage for the branches that matter, and anything that would
+            behave differently under CRE's constraints than it appears to.
+
+            Prefer a small number of specific, actionable findings over a broad
+            survey. If the PR is sound, say so plainly and briefly rather than
+            manufacturing concerns. Where you are unsure whether something is a
+            bug, say what you checked and what you could not verify.
+
+            Note what the CI jobs did and did not cover — a skipped simulate is
+            not simulate coverage.
+
+            Post your review with `gh pr comment` using your Bash tool.
+
+          claude_args: >-
+            --allowed-tools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh run view:*),Bash(gh run list:*)"

@@ -1,0 +1,181 @@
+name: ci
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25.3"
+  CRE_CLI_VERSION: v1.29.0
+
+jobs:
+  go:
+    name: vet / test / lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Ensure go.mod / go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      # The workflow mains are //go:build wasip1, so `./...` on a linux
+      # toolchain excludes every file in them and fails with "build constraints
+      # exclude all Go files". Host packages are addressed explicitly; the
+      # workflows get their own wasip1 steps.
+      - name: go vet (host packages)
+        run: go vet ./pkg/... ./contracts/...
+
+      - name: go test (host packages)
+        run: go test -race ./pkg/... ./contracts/...
+
+      - name: wasip1 vet + build (workflows)
+        run: |
+          GOOS=wasip1 GOARCH=wasm go vet ./queue-keeper/ ./strategy-keeper/ ./freeze-watch/
+          GOOS=wasip1 GOARCH=wasm go build -o /tmp/queue-keeper.wasm ./queue-keeper/
+          GOOS=wasip1 GOARCH=wasm go build -o /tmp/strategy-keeper.wasm ./strategy-keeper/
+          GOOS=wasip1 GOARCH=wasm go build -o /tmp/freeze-watch.wasm ./freeze-watch/
+
+      # CRE rejects a workflow over 20mb compressed (WASMCompressedBinarySizeLimit).
+      # Deploy is the wrong place to discover a binary has outgrown it.
+      - name: Check WASM size against the CRE limit
+        run: |
+          set -euo pipefail
+          limit=$((20 * 1024 * 1024))
+          for f in /tmp/*.wasm; do
+            raw=$(stat -c%s "$f")
+            gz=$(gzip -9 -c "$f" | wc -c)
+            printf '%s: %s raw, %s gzipped\n' "$(basename "$f")" "$raw" "$gz"
+            if [ "$gz" -gt "$limit" ]; then
+              echo "::error::$(basename "$f") is ${gz} bytes compressed, over the ${limit} byte CRE limit"
+              exit 1
+            fi
+          done
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l pkg contracts queue-keeper strategy-keeper freeze-watch)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+
+  # golangci-lint v2 is required: v1 refuses to run when it was built with an
+  # older Go than the module targets ("go1.23 ... lower than 1.25.3"). v2
+  # binaries need action v7 or newer, so the action and the version pin have to
+  # move together.
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Lint host packages
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          args: --timeout=5m ./pkg/... ./contracts/...
+
+      # The workflow mains only compile under wasip1, so they need a second
+      # pass with the build target set. Without this the keeper logic — the
+      # part most worth linting — is never linted at all.
+      - name: Lint workflows (wasip1)
+        uses: golangci/golangci-lint-action@v9
+        env:
+          GOOS: wasip1
+          GOARCH: wasm
+        with:
+          version: v2.12.2
+          args: --timeout=5m ./queue-keeper/... ./strategy-keeper/... ./freeze-watch/...
+
+  simulate:
+    name: cre workflow simulate
+    runs-on: ubuntu-latest
+    needs: go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # `cre workflow simulate` requires authentication: without a login or
+      # CRE_API_KEY it exits 1 with "Authentication required". It does NOT need
+      # CRE_ETH_PRIVATE_KEY — the CLI falls back to a default key for
+      # chain-write simulation — so the original gate watched the wrong secret
+      # and skipped forever.
+      #
+      # A skip here is reported as a warning annotation and written to the run
+      # summary. That is the whole point: the previous gate reported success
+      # while doing nothing, which hid both missing coverage and a broken CLI
+      # install. Silence is not the same as green.
+      - name: Check for CRE credentials
+        id: creds
+        env:
+          CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
+        run: |
+          if [ -z "${CRE_API_KEY}" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Simulate skipped::CRE_API_KEY is not set, so cre workflow simulate did not run. This job is NOT verifying the workflows."
+            {
+              echo "### :warning: \`cre workflow simulate\` skipped"
+              echo
+              echo "\`CRE_API_KEY\` is not set in repository secrets, and the CRE CLI refuses to"
+              echo "simulate unauthenticated. **The workflows were not simulated in this run.**"
+              echo
+              echo "Add \`CRE_API_KEY\` (Organization → APIs in the CRE UI) to enable it."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install CRE CLI
+        if: steps.creds.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          # Extract into a dedicated directory. The release tarball holds a
+          # single file named cre_<version>_linux_amd64, and globbing 'cre*'
+          # straight out of /tmp also matched cre.tar.gz — which is what got
+          # installed as the binary ("Exec format error").
+          mkdir -p /tmp/cre-dist
+          curl -fsSL "https://github.com/smartcontractkit/cre-cli/releases/download/${CRE_CLI_VERSION}/cre_linux_amd64.tar.gz" \
+            -o /tmp/cre.tar.gz
+          tar -xzf /tmp/cre.tar.gz -C /tmp/cre-dist
+          BIN="$(find /tmp/cre-dist -type f -name 'cre_*' | head -n1)"
+          if [ -z "$BIN" ]; then
+            echo "::error::no cre binary found in the ${CRE_CLI_VERSION} release tarball"
+            ls -la /tmp/cre-dist
+            exit 1
+          fi
+          sudo install -m 0755 "$BIN" /usr/local/bin/cre
+          cre version
+
+      - name: Simulate all workflows
+        if: steps.creds.outputs.run == 'true'
+        env:
+          CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          GOTOOLCHAIN: go${{ env.GO_VERSION }}
+        run: |
+          set -euo pipefail
+          export SEPOLIA_RPC_URL="${SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}"
+          go mod download
+          for wf in queue-keeper strategy-keeper freeze-watch; do
+            echo "::group::simulate $wf"
+            cre workflow simulate "$wf" --target staging-settings --non-interactive --trigger-index 0
+            echo "::endgroup::"
+          done
+          echo "### :white_check_mark: Simulated queue-keeper, strategy-keeper, freeze-watch" >> "$GITHUB_STEP_SUMMARY"
