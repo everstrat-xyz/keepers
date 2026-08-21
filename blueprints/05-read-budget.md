@@ -62,7 +62,7 @@ flowchart LR
     S2 --> S3["3. queue cursor, AMM float + price,<br/>strategy list, fee bps (multicall)"]
     S3 --> S4["4. Controller balance"]
     S4 --> S5["5. per-strategy ×6 sub-calls<br/>(multicall, chunked)"]
-    S5 --> S6["M. bounded redemption scan<br/>(≤25 batches, ≤50 users —<br/>mirrors the contract)"]
+    S5 --> S6["M. bounded redemption scan<br/>(user lists + requestInfo chunked;<br/>≤25 batches, ≤50 users)"]
     S6 --> S7["strategyUpkeepStatus<br/>(reserved)"]
 ```
 

@@ -83,7 +83,7 @@ flowchart TB
     ST --> D["Decide(state)<br/>(pure, pkg/queue / pkg/strategy)"]
     D --> X["cross-check vs on-chain view<br/>(queueUpkeepStatus / strategyUpkeepStatus)"]
     X -- "divergence = bug" --> EL["log Error — must stay at zero<br/>(shadow-mode exit criterion, issue #5)"]
-    X -- "match / intended-improvement" --> IL["log Info"]
+    X -- "match / intended-improvement / truncated-scan" --> IL["log Info"]
     EL --> NA{"action == None?"}
     IL --> NA
     NA -- "yes" --> DONE["Result, done"]

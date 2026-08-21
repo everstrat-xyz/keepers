@@ -55,13 +55,19 @@ limit. When the scan runs out it stops and marks the state truncated
 
 A truncated scan can only cause the workflow to propose **less** work than
 exists, never wrong work — `Decide` walks batches oldest-first, so a short scan
-is a prefix of a long one. The cost is that "found nothing" becomes ambiguous,
-which is why it is logged rather than silently tolerated.
+is a prefix of a long one. W1 classifies the miss as `truncated-scan` and
+**refuses `PriceBatch`** until a later tick can finish the process walk (pricing
+would still be accepted on-chain and would grow the live-priced set instead of
+settling). W2's understated `NeedsETH` is `truncated-scan` in
+`strategy.Classify`. The cost is that "found nothing" becomes ambiguous, which
+is why it is logged rather than silently tolerated.
 
 ## Rules for new reads
 
 1. **Never call in a loop.** One `Aggregate` per round, chunked with
-   `ChunkSubCalls`.
+   `ChunkSubCalls`. Dynamic returns (`unprocessedUsers` address[]) must be
+   sized for the worst-case element count — three full 50-user lists in one
+   read exceed 5 kB and abort the tick (`TestUnprocessedUsersListsMustBeChunked`).
 2. **Take budget before issuing**, and handle refusal by degrading.
 3. **Only read what can change the decision.** W1 reads the user list for the
    oldest processable batch only, because `Decide` cannot choose any other batch

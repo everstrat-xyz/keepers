@@ -389,6 +389,9 @@ func readQueueState(
 		}
 		done += len(results)
 	}
+	if done < len(requestCalls) && state.ScanTruncatedAt == 0 {
+		state.ScanTruncatedAt = candidates[0].id
+	}
 
 	return state, nil
 }

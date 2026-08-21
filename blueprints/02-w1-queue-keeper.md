@@ -53,9 +53,11 @@ flowchart TB
     LOOP -- "found oldest batch<br/>with affordable work" --> PR["ProcessRequests(batchId, endIndex)<br/>ScannedBeyondWindow = id ≥ windowEnd"]
     LOOP -- "nothing affordable" --> AGE
 
-    AGE{"current batch unprocessed AND<br/>now - createdAt ≥ minBatchAge?"}
-    AGE -- "yes" --> PB["PriceBatch(currentBatchId)"]
-    AGE -- "no" --> CUR
+    AGE{"scan truncated?"}
+    AGE -- "yes" --> CUR
+    AGE -- "no" --> AGE2{"current batch unprocessed AND<br/>now - createdAt ≥ minBatchAge?"}
+    AGE2 -- "yes" --> PB["PriceBatch(currentBatchId)"]
+    AGE2 -- "no" --> CUR
 
     CUR{"boundedCursor =<br/>PeekAdvancedCursor(MaxBatchScan=25)<br/>&gt; stored cursor?"}
     CUR -- "yes" --> AC["AdvanceCursor(boundedCursor)<br/>claim capped at cursor + 25 — the receiver's<br/>bounded walk cannot reach further"]
@@ -112,6 +114,7 @@ Shadow mode's exit criterion is "zero `bug`-class divergences over 7 days"
 | --- | --- | --- |
 | `match` | Workflow and `queueUpkeepStatus()` agree | log info |
 | `intended-improvement` | Workflow found work beyond the view's two-window reach (`OnChainScanWindowEnd`), or claimed a valid shorter prefix — the receiver accepts any prefix | log info, expected |
+| `truncated-scan` | Read budget stopped the process walk short, so a missing `ProcessRequests` or a skipped `PriceBatch` is the workflow refusing to guess | log info, explained |
 | `bug` | Anything else — off-chain model or read layer is wrong | log **error**, must stay at zero |
 
 ```mermaid
@@ -119,10 +122,12 @@ flowchart LR
     WF["W1 decision"] --- CL["Classify"] --- OC["queueUpkeepStatus()"]
     CL -- "same action + batch + prefix" --> M["match"]
     CL -- "W1 deeper / shorter prefix,<br/>within receiver-acceptable rules" --> I["intended-improvement"]
+    CL -- "scan truncated, actions differ" --> T["truncated-scan"]
     CL -- "anything else" --> B["bug → alert"]
     style B fill:#ffebee
     style M fill:#e8f5e9
     style I fill:#fff8e1
+    style T fill:#fff8e1
 ```
 
 ## Batch lifecycle context (what W1 is automating)

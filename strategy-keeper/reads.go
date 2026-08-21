@@ -22,7 +22,8 @@ import (
 //	1  balance     Controller ETH
 //	1  multicall   per-strategy health/capacity/cooldown/weight/fees
 //	1  multicall   queue batchInfo + counts for the bounded redemption scan
-//	M  multicall   unprocessedUsers + requestInfo for those batches
+//	M  multicall   unprocessedUsers (chunked; address[] at MaxUsersCostScan)
+//	               + requestInfo for those batches
 //	1  call        strategyUpkeepStatus cross-check
 //
 // W2's redemption scan is capped at strategy.MaxBatchScan / MaxUsersCostScan on
@@ -406,6 +407,11 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 
 	// Phase 2: request detail for priced batches with work. The current batch
 	// is skipped: it is unpriced, and an unpriced batch is not a liability.
+	//
+	// unprocessedUsers returns address[] — dynamic, so one Aggregate of every
+	// live batch at MaxUsersCostScan blows PayloadSizeLimit (~1.8 kB framed
+	// each; three full lists ≈ 5.5 kB) and aborts the tick. Chunk like
+	// requestInfo, sized for a full 50-user list.
 	var userCalls []evmread.SubCall
 	var userIDs []uint64
 	for _, id := range ids {
@@ -422,57 +428,68 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 			new(big.Int).SetUint64(id), new(big.Int), new(big.Int).SetUint64(limit)))
 	}
 
+	var reqCalls []evmread.SubCall
+	var reqOwners []uint64
 	if len(userCalls) > 0 {
-		if !b.Take(1) {
-			truncated = true
-		} else {
-			userResults, err := c.Aggregate(userCalls, false).Await()
+		// offset word + length word + n addresses.
+		userListBytes := evmread.EstimateResultBytes(64 + 32*int(strategy.MaxUsersCostScan))
+		listed := 0
+		for _, chunk := range evmread.ChunkSubCalls(userCalls, userListBytes) {
+			if !b.Take(1) {
+				truncated = true
+				break
+			}
+			userResults, err := c.Aggregate(chunk, false).Await()
 			if err != nil {
 				return nil, false, fmt.Errorf("reading unprocessed users: %w", err)
 			}
-
-			var reqCalls []evmread.SubCall
-			var reqOwners []uint64
-			for i, id := range userIDs {
-				if len(userResults[i].Values) != 1 {
-					return nil, false, fmt.Errorf("unprocessedUsers returned %d values, want 1", len(userResults[i].Values))
+			for i, r := range userResults {
+				if len(r.Values) != 1 {
+					return nil, false, fmt.Errorf("unprocessedUsers returned %d values, want 1", len(r.Values))
 				}
-				users, err := evmread.Addresses(userResults[i].Values[0], "unprocessedUsers")
+				users, err := evmread.Addresses(r.Values[0], "unprocessedUsers")
 				if err != nil {
 					return nil, false, err
 				}
+				id := userIDs[listed+i]
 				for _, u := range users {
 					reqOwners = append(reqOwners, id)
 					reqCalls = append(reqCalls,
 						p.exitQueue.Sub("requestInfo", new(big.Int).SetUint64(id), u))
 				}
 			}
+			listed += len(userResults)
+		}
+		if listed < len(userCalls) {
+			truncated = true
+		}
+	}
 
-			done := 0
-			for _, chunk := range evmread.ChunkSubCalls(reqCalls, perResult) {
-				if !b.Take(1) {
-					truncated = true
-					break
-				}
-				results, err := c.Aggregate(chunk, false).Await()
-				if err != nil {
-					return nil, false, fmt.Errorf("reading request info: %w", err)
-				}
-				for i, r := range results {
-					id := reqOwners[done+i]
-					req, err := decodeQueueRequest(r.Values)
-					if err != nil {
-						return nil, false, err
-					}
-					batch := batches[id]
-					batch.Requests = append(batch.Requests, req)
-					batches[id] = batch
-				}
-				done += len(results)
-			}
-			if done < len(reqCalls) {
+	if len(reqCalls) > 0 {
+		done := 0
+		for _, chunk := range evmread.ChunkSubCalls(reqCalls, perResult) {
+			if !b.Take(1) {
 				truncated = true
+				break
 			}
+			results, err := c.Aggregate(chunk, false).Await()
+			if err != nil {
+				return nil, false, fmt.Errorf("reading request info: %w", err)
+			}
+			for i, r := range results {
+				id := reqOwners[done+i]
+				req, err := decodeQueueRequest(r.Values)
+				if err != nil {
+					return nil, false, err
+				}
+				batch := batches[id]
+				batch.Requests = append(batch.Requests, req)
+				batches[id] = batch
+			}
+			done += len(results)
+		}
+		if done < len(reqCalls) {
+			truncated = true
 		}
 	}
 

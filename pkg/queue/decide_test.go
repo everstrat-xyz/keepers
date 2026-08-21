@@ -388,6 +388,68 @@ func TestDecidePriorityOrder(t *testing.T) {
 		}
 	})
 
+	t.Run("refuses PriceBatch when the process walk was truncated", func(t *testing.T) {
+		// Batch 1 looks like it might have work, but users were not loaded.
+		// Pricing batch 2 would be accepted on-chain even if batch 1 was
+		// processable — grow live-priced instead of settle.
+		head := batch(1, req(1, 1))
+		head.Requests = nil
+		current := batch(2, req(2, 1))
+		current.CanBeProcessed = false
+		current.PricedAt = 0
+		current.CreatedAt = nowTS - 2*dayS
+
+		s := stateWith(head, current)
+		s.CurrentBatchID = 2
+		s.ScanTruncatedAt = 1
+
+		d, err := queue.Decide(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Action == queue.ActionPriceBatch {
+			t.Fatalf("Action = PriceBatch; a truncated process walk must not price")
+		}
+		if d.Action != queue.ActionNone {
+			t.Errorf("got %s, want None (AdvanceCursor is not due; batch 1 is not skippable)", d.Action)
+		}
+	})
+
+	t.Run("still processes when truncated if an affordable prefix was loaded", func(t *testing.T) {
+		head := batch(1, req(1, 1))
+		s := stateWith(head)
+		s.ScanTruncatedAt = 1
+
+		d, err := queue.Decide(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Action != queue.ActionProcessRequests || d.BatchID != 1 {
+			t.Errorf("got %s batch %d, want ProcessRequests batch 1", d.Action, d.BatchID)
+		}
+	})
+
+	t.Run("still advances the cursor when truncated", func(t *testing.T) {
+		done := batch(1, req(1, 1))
+		done.UnprocessedCount = 0
+		current := batch(2)
+		current.UnprocessedCount = 0
+		current.CanBeProcessed = false
+		current.CreatedAt = nowTS
+
+		s := stateWith(done, current)
+		s.CurrentBatchID = 2
+		s.ScanTruncatedAt = 1
+
+		d, err := queue.Decide(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Action != queue.ActionAdvanceCursor || d.BatchID != 2 {
+			t.Errorf("got %s batch %d, want AdvanceCursor to 2", d.Action, d.BatchID)
+		}
+	})
+
 	t.Run("does not price a batch younger than minBatchAge", func(t *testing.T) {
 		current := batch(1, req(1, 1))
 		current.CanBeProcessed = false

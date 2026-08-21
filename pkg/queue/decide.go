@@ -86,7 +86,8 @@ type State struct {
 	//
 	// A truncated scan can only cause the workflow to propose *less* work than
 	// exists, never wrong work — but it makes "the workflow found nothing"
-	// ambiguous, so the tick logs it.
+	// ambiguous, so the tick logs it, Classify labels it truncated-scan, and
+	// Decide refuses PriceBatch until a later tick can finish the process walk.
 	ScanTruncatedAt uint64
 }
 
@@ -294,15 +295,21 @@ func Decide(s State) (Decision, error) {
 		}, nil
 	}
 
-	// Price the current batch once it is old enough.
-	if b, ok := s.Batches[s.CurrentBatchID]; ok && b.UnprocessedCount > 0 {
-		if age := s.Now - b.CreatedAt; s.Now >= b.CreatedAt && age >= s.MinBatchAge {
-			return Decision{
-				Action:  ActionPriceBatch,
-				BatchID: s.CurrentBatchID,
-				Reason: fmt.Sprintf("current batch %d has %d unprocessed requests and is %ds old (minBatchAge %ds)",
-					s.CurrentBatchID, b.UnprocessedCount, age, s.MinBatchAge),
-			}, nil
+	// PriceBatch is accepted even when ProcessRequests was also due, and would
+	// grow the live-priced set instead of settling. If the process walk did not
+	// finish, we cannot know that nothing was affordable — skip pricing this
+	// tick. AdvanceCursor is still safe: it only walks skippable batches we
+	// already have headers for.
+	if !s.ScanTruncated() {
+		if b, ok := s.Batches[s.CurrentBatchID]; ok && b.UnprocessedCount > 0 {
+			if age := s.Now - b.CreatedAt; s.Now >= b.CreatedAt && age >= s.MinBatchAge {
+				return Decision{
+					Action:  ActionPriceBatch,
+					BatchID: s.CurrentBatchID,
+					Reason: fmt.Sprintf("current batch %d has %d unprocessed requests and is %ds old (minBatchAge %ds)",
+						s.CurrentBatchID, b.UnprocessedCount, age, s.MinBatchAge),
+				}, nil
+			}
 		}
 	}
 

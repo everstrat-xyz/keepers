@@ -245,3 +245,16 @@ func TestReadPlanFitsBudget(t *testing.T) {
 	}
 	t.Logf("read plan reaches ~%d batches per tick versus the on-chain window of 25", batchesReachable)
 }
+
+// TestUnprocessedUsersListsMustBeChunked pins the W2 payload trap: a single
+// Aggregate of three full MAX_USERS_COST_SCAN=50 address[] results exceeds
+// PayloadSizeLimit and aborts the tick. ChunkSubCalls must split them.
+func TestUnprocessedUsersListsMustBeChunked(t *testing.T) {
+	const maxUsersCostScan = 50
+	per := evmread.EstimateResultBytes(64 + 32*maxUsersCostScan)
+	chunks := evmread.ChunkSubCalls(make([]evmread.SubCall, 3), per)
+	if len(chunks) < 2 {
+		t.Errorf("3×%d-user lists fit in %d chunk(s); one Aggregate of all three exceeds 5 kB",
+			maxUsersCostScan, len(chunks))
+	}
+}
