@@ -101,7 +101,9 @@ easiest thing to get wrong here:
   revert every time.
 
 `pkg/strategy` therefore mirrors `MAX_BATCH_SCAN` / `MAX_USERS_COST_SCAN`
-exactly, pinned by `TestScanCapsMatchTheContract`.
+exactly, pinned by `TestScanCapsMatchTheContract`. The needs walk is
+`[cursor, currentBatchId)` — the current unpriced batch is not a liability
+(M-11) and is not fetched. Expired in-window batches skip the user-list phase.
 
 `AdvanceCursor` is W1's exception: the receiver advances with its *bounded*
 walk, so the claim is capped at what one report can reach.

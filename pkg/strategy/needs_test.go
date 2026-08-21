@@ -168,6 +168,37 @@ func TestBatchSettlementCostSkips(t *testing.T) {
 	}
 }
 
+func TestNeedsCostScan(t *testing.T) {
+	live := pricedBatch(1, request(1))
+	if !live.NeedsCostScan(now, maxProcTS) {
+		t.Error("live in-window batch: NeedsCostScan = false")
+	}
+
+	unpriced := pricedBatch(1, request(1))
+	unpriced.CanBeProcessed = false
+	if unpriced.NeedsCostScan(now, maxProcTS) {
+		t.Error("unpriced batch: NeedsCostScan = true; no user list can change NeedsETH")
+	}
+
+	empty := pricedBatch(1, request(1))
+	empty.UnprocessedCount = 0
+	if empty.NeedsCostScan(now, maxProcTS) {
+		t.Error("empty batch: NeedsCostScan = true")
+	}
+
+	expired := pricedBatch(1, request(1))
+	expired.PricedAt = now - maxProcTS - 1
+	if expired.NeedsCostScan(now, maxProcTS) {
+		t.Error("expired batch: NeedsCostScan = true; _batchSettlementCost is 0 without users")
+	}
+
+	atBoundary := pricedBatch(1, request(1))
+	atBoundary.PricedAt = now - maxProcTS
+	if !atBoundary.NeedsCostScan(now, maxProcTS) {
+		t.Error("exactly at escape-hatch boundary: NeedsCostScan = false; strict '>' still counts")
+	}
+}
+
 // TestSlippedRequestsAreExcluded: a request whose batch priced more than the
 // user's tolerance below their queued price settles at zero, so it costs the
 // Controller nothing.

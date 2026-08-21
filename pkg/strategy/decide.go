@@ -271,6 +271,20 @@ type QueueBatch struct {
 	Requests         []QueueRequest
 }
 
+// PastEscapeHatch is the MAX_BATCH_PROCESSING_TIME cutoff used by
+// _batchSettlementCost (strict `>`). Past this, users cancel; the keeper must
+// not treat the batch as a Controller liability.
+func (b QueueBatch) PastEscapeHatch(now, maxBatchProcessingTime uint64) bool {
+	return b.PricedAt > 0 && now > b.PricedAt+maxBatchProcessingTime
+}
+
+// NeedsCostScan reports whether requestInfo can change NeedsETH. Unpriced
+// (including the current batch), empty, and expired batches contribute 0
+// without a user list — same guards as _batchSettlementCost.
+func (b QueueBatch) NeedsCostScan(now, maxBatchProcessingTime uint64) bool {
+	return b.CanBeProcessed && b.UnprocessedCount > 0 && !b.PastEscapeHatch(now, maxBatchProcessingTime)
+}
+
 // QueueRequest is one unprocessed redemption request.
 type QueueRequest struct {
 	EvePriceAtRequestTime *big.Int
@@ -321,14 +335,7 @@ func PendingRedemptionNeedsETH(
 // pending redemptions cost?" rather than "what can we afford right now?".
 func batchSettlementCost(b QueueBatch, maxBatchProcessingTime, now uint64) (*big.Int, error) {
 	cost := new(big.Int)
-	if !b.CanBeProcessed {
-		return cost, nil
-	}
-	// A batch past the escape hatch is users' to close, not the keeper's.
-	if b.PricedAt > 0 && now > b.PricedAt+maxBatchProcessingTime {
-		return cost, nil
-	}
-	if b.UnprocessedCount == 0 {
+	if !b.NeedsCostScan(now, maxBatchProcessingTime) {
 		return cost, nil
 	}
 

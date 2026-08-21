@@ -18,19 +18,20 @@ import (
 //
 //	1  header      block timestamp (the clock — see docs/envelope.md)
 //	1  multicall   registry lookups + receiver thresholds + receiver paused
-//	1  multicall   strategy list, fee bps, AMM float, queue cursor, pause flags
+//	1  multicall   currentBatchId bound, MAX_BATCH_PROCESSING_TIME,
+//	               queue cursor, AMM float, strategy list, fee bps, pause flags
 //	1  balance     Controller ETH
-//	1  multicall   per-strategy health/capacity/cooldown/weight/fees
-//	1  multicall   queue batchInfo + counts for the bounded redemption scan
-//	M  multicall   unprocessedUsers + requestInfo for those batches
+//	1  multicall   per-strategy health/capacity/cooldown/weight/fees (×7)
+//	1  multicall   queue batchInfo + counts for [cursor, currentBatchId)
+//	M  multicall   unprocessedUsers + requestInfo only if NeedsCostScan
 //	1  call        strategyUpkeepStatus cross-check
 //
 // W2's redemption scan is capped at strategy.MaxBatchScan / MaxUsersCostScan on
 // purpose — matching the contract, not exceeding it. See strategy.Decide.
 //
-// `eveBasePriceInETH` is no longer in the preamble: the current batch's
-// unpriced EVE stopped being a liability in contracts PR #43 (M-11), and the
-// bounded scan needs no other price.
+// There is no eveBasePriceInETH read: the current batch's unpriced EVE is not a
+// liability (contracts PR #43, M-11), and the bounded scan costs priced batches
+// at finalEvePrice.
 
 const reservedReads = 2
 
@@ -350,21 +351,23 @@ func readStrategies(c *evmread.Caller, p preamble, b *evmread.Budget) ([]strateg
 // the figure and is surfaced in the divergence classification rather than
 // silently changing the decision.
 func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.Int, bool, error) {
+	// [cursor, currentBatchId), capped at MaxBatchScan — exclusive of the
+	// current batch, which is unpriced cancellable equity until priceBatch
+	// (M-11) and contributes nothing. Same bound as _pendingRedemptionNeedsETH.
 	first := p.queueCursor
 	last := p.currentBatchID
-	if first > last {
-		first = last
-	}
-	if last-first > strategy.MaxBatchScan {
+	if last > first+strategy.MaxBatchScan {
 		last = first + strategy.MaxBatchScan
 	}
+	if first >= last {
+		return new(big.Int), false, nil
+	}
 
-	// Phase 1: batchInfo + count for each batch in the bounded window. The
-	// current batch is included so its (empty) entry decodes like the rest,
-	// but it contributes nothing until priced — see strategy.PendingRedemptionNeedsETH.
+	// Phase 1: batchInfo + count. Headers are required to know pricedAt /
+	// emptiness; user lists are not loaded for batches that cannot change NeedsETH.
 	var ids []uint64
 	var calls []evmread.SubCall
-	for id := first; id <= last; id++ {
+	for id := first; id < last; id++ {
 		ids = append(ids, id)
 		arg := new(big.Int).SetUint64(id)
 		calls = append(calls,
@@ -404,13 +407,15 @@ func readPendingNeeds(c *evmread.Caller, p preamble, b *evmread.Budget) (*big.In
 		truncated = true
 	}
 
-	// Phase 2: request detail for priced batches with work. The current batch
-	// is skipped: it is unpriced, and an unpriced batch is not a liability.
+	// Phase 2: request detail only for batches that can change NeedsETH.
+	// Expired, empty, and unpriced (the current batch is already excluded from
+	// ids) contribute 0 without users — fetching them would steal reads from
+	// later live batches and understate the sum.
 	var userCalls []evmread.SubCall
 	var userIDs []uint64
 	for _, id := range ids {
 		batch, ok := batches[id]
-		if !ok || id == p.currentBatchID || !batch.CanBeProcessed || batch.UnprocessedCount == 0 {
+		if !ok || !batch.NeedsCostScan(p.blockTimestamp, p.maxProcessing) {
 			continue
 		}
 		limit := batch.UnprocessedCount

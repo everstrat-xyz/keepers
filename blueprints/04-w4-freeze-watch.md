@@ -37,7 +37,7 @@ flowchart LR
     subgraph CRIT["Severity: critical"]
         C1["protocol-paused<br/>Controller / ExitQueue / AMM /<br/>StrategyManager / receiver paused"]
         C2["oracle-stale<br/>feed older than 3h default —<br/>the thing that tips NAV into freeze"]
-        C3["batch-escape-hatch<br/>priced batch PAST<br/>MAX_BATCH_PROCESSING_TIME<br/>with unprocessed requests"]
+        C3["batch-escape-hatch<br/>now ≥ pricedAt + MAX<br/>(1s earlier than W1/W2's strict &gt;)<br/>with unprocessed requests"]
         C4["keeper-stalled<br/>upkeep available but no report<br/>accepted for &gt; 6h default"]
     end
     subgraph WARN["Severity: warning"]
@@ -54,7 +54,7 @@ flowchart LR
 | --- | --- |
 | `protocol-paused` | Not a precursor — the protocol is already halted; every keeper action reverts |
 | `oracle-stale` | NAV reads revert once the contract's own staleness bound is crossed; W4 fires *before* that (3h default) |
-| `batch-escape-hatch` | After the hatch users must close their own requests; the keeper can no longer settle the batch |
+| `batch-escape-hatch` | After the hatch users must close their own requests; the keeper can no longer settle the batch. W4 fires at `now ≥ pricedAt + MAX` so ops see it ~1s before W1/W2/`_batchSettlementCost` (strict `>`) drop the batch from keeper work |
 | `keeper-stalled` | The silent-stop mode: work exists, the receiver's own view says so, yet nothing arrives — the thing this workflow exists to catch |
 
 ## Liveness check detail — `KeeperHealth`
