@@ -66,7 +66,7 @@ flowchart LR
     S2 --> S3["3. cursor, currentBatchId bound,<br/>MAX_BATCH_PROCESSING_TIME,<br/>AMM float, strategy list, fee bps,<br/>pause flags (multicall)"]
     S3 --> S4["4. Controller balance"]
     S4 --> S5["5. per-strategy ×7 sub-calls<br/>(incl. depositWeight;<br/>multicall, chunked)"]
-    S5 --> S6["M. [cursor, currentBatchId) headers<br/>≤25; users only if NeedsCostScan<br/>(priced, unexpired, has work)"]
+    S5 --> S6["M. [cursor, currentBatchId) headers ≤25;<br/>users only if NeedsCostScan<br/>(priced, unexpired, has work);<br/>lists + requestInfo chunked, ≤50 users"]
     S6 --> S7["strategyUpkeepStatus<br/>(reserved)"]
 ```
 

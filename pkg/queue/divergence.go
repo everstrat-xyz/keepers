@@ -26,6 +26,11 @@ const (
 	// Expected, and the reason W1 exists.
 	DivergenceIntendedImprovement DivergenceClass = "intended-improvement"
 
+	// DivergenceTruncatedScan — the read budget stopped the queue scan short,
+	// so a missing ProcessRequests (or a skipped PriceBatch) is the workflow
+	// refusing to guess, not a logic error.
+	DivergenceTruncatedScan DivergenceClass = "truncated-scan"
+
 	// DivergenceBug — anything else. The workflow disagrees with the view in a
 	// way the scan window does not explain, so either the off-chain model or
 	// the read layer is wrong. This is what must stay at zero.
@@ -104,6 +109,12 @@ func Classify(decision Decision, onChain UpkeepStatus, s State) Divergence {
 	case decision.Action == onChain.Action && decision.BatchID == onChain.BatchID:
 		d.Class = DivergenceMatch
 		d.Explanation = "same action and batch"
+
+	case s.ScanTruncated() && decision.Action != onChain.Action:
+		d.Class = DivergenceTruncatedScan
+		d.Explanation = fmt.Sprintf(
+			"read budget truncated the queue scan at batch %d; workflow proposes %s, view recommends %s on batch %d",
+			s.ScanTruncatedAt, decision.Action, onChain.Action, onChain.BatchID)
 
 	case decision.Action == ActionNone && onChain.Action != ActionNone:
 		d.Explanation = fmt.Sprintf("on-chain view recommends %s on batch %d but the workflow proposes nothing — upkeep would stall",

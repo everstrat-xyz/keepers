@@ -20,7 +20,7 @@ On-chain consumer: `CREQueueExecutor`.
 4. Pick `PriceBatch` / `ProcessRequests` / `AdvanceCursor` / none, in the same
    priority order as `queueUpkeepStatus`.
 5. Cross-check against `queueUpkeepStatus()` and classify the difference as
-   `match` / `intended-improvement` / `bug` (issue #5's monitoring signal).
+   `match` / `intended-improvement` / `truncated-scan` / `bug` (issue #5's monitoring signal).
 6. Build the Envelope report and validate it against the receiver's live guards.
    In shadow mode it stops here; otherwise it delivers via
    [`pkg/crewrite`](../pkg/crewrite).

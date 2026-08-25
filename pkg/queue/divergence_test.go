@@ -65,6 +65,29 @@ func TestClassify(t *testing.T) {
 			want:     queue.DivergenceBug,
 		},
 		{
+			name:     "truncated scan explains idle vs view work",
+			decision: queue.Decision{Action: queue.ActionNone},
+			onChain:  queue.UpkeepStatus{Action: queue.ActionProcessRequests, BatchID: 1, Count: 2},
+			state: func() queue.State {
+				s := plain
+				s.ScanTruncatedAt = 1
+				return s
+			}(),
+			want: queue.DivergenceTruncatedScan,
+		},
+		{
+			name:     "truncated scan explains skipped PriceBatch",
+			decision: queue.Decision{Action: queue.ActionNone},
+			onChain:  queue.UpkeepStatus{Action: queue.ActionPriceBatch, BatchID: 2},
+			state: func() queue.State {
+				s := plain
+				s.CurrentBatchID = 2
+				s.ScanTruncatedAt = 1
+				return s
+			}(),
+			want: queue.DivergenceTruncatedScan,
+		},
+		{
 			name:     "different batches for the same action",
 			decision: queue.Decision{Action: queue.ActionProcessRequests, BatchID: 2, EndIndex: 1},
 			onChain:  queue.UpkeepStatus{Action: queue.ActionProcessRequests, BatchID: 1, Count: 2},
@@ -136,6 +159,7 @@ func TestUnexplained(t *testing.T) {
 	}{
 		{queue.DivergenceMatch, false},
 		{queue.DivergenceIntendedImprovement, false},
+		{queue.DivergenceTruncatedScan, false},
 		{queue.DivergenceBug, true},
 	} {
 		d := queue.Divergence{Class: tt.class}
