@@ -14,7 +14,7 @@ Phase 3).
 | --- | --- | --- |
 | `protocol-paused` | critical | Controller / ExitQueue / AMM / StrategyManager / a receiver is paused |
 | `oracle-stale` | critical | a feed's price is older than `oracleStaleAfterSeconds` |
-| `batch-escape-hatch` | warning → critical | a priced batch nears, then passes, `MAX_BATCH_PROCESSING_TIME` |
+| `batch-escape-hatch` | warning → critical | a priced batch nears, then reaches `pricedAt + MAX` (`now ≥` deadline — ~1s before W1/W2's strict `>`) |
 | `keeper-stalled` | critical | upkeep was available but no report has been accepted for `keeperStalledAfterSeconds` |
 | `receiver-unbound` | warning | neither `expectedWorkflowId` nor `expectedAuthor` is set, so the receiver rejects everything |
 | `upkeep-backlog` | warning | `backlogWarnBatches` batches are waiting behind the cursor |

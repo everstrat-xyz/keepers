@@ -13,11 +13,14 @@ On-chain consumer: `CREStrategyExecutor`.
 2. Read the receiver's thresholds, `lastSyncAt`, `lastSequence` and pause flags.
 3. Read per-strategy health, capacity, deposit cooldown, `depositWeight` and
    accrued fees.
-4. Reproduce `_pendingRedemptionNeedsETH` from raw queue reads.
+4. Reproduce `_pendingRedemptionNeedsETH` from raw queue reads over
+   `[cursor, currentBatchId)` (the current unpriced batch is not fetched;
+   expired batches get headers only — users are loaded only if `NeedsCostScan`).
 5. Pick an action in the contract's exact priority order — Rebalance →
    WithdrawShortfall → ProvideExitLiquidity → DepositExcess →
    HarvestPerformanceFees → Sync.
-6. Cross-check against `strategyUpkeepStatus()`.
+6. Cross-check against `strategyUpkeepStatus()` and classify as `match` /
+   `amount-only` / `truncated-scan` / `bug`.
 7. Build an **action-only** report and validate it against the receiver's live
    guards. Shadow mode stops here.
 
@@ -50,9 +53,11 @@ receiver reverts on:
 - **The current unpriced batch is not a liability (M-11).** Until `priceBatch`
   the queued EVE is cancellable equity (`liveRedemptionOffsets` is zero), so
   `PendingRedemptionNeedsETH` counts only `[cursor, currentBatchId)` priced
-  batches. Priced at the live base price instead, a queue-then-cancel loop
-  could pull LP via WithdrawShortfall — and W2 would propose shortfalls the
-  receiver's recomputation rejects.
+  batches. The read layer does not fetch the current batch at all — costing it
+  at the live base price would let a queue-then-cancel loop pull LP via
+  WithdrawShortfall, and W2 would propose shortfalls the receiver's
+  recomputation rejects. Expired in-window batches are the same skip: cost 0
+  without `requestInfo`, so Phase 2 does not load their users.
 - **`DepositExcess` needs `depositWeight > 0` (R4-M-04).** An all-zero deposit
   weight is registered-but-unfunded: the StrategyManager skips it and refunds
   the Controller. `depositCapacityAvailable` requires a non-zero weight so W2

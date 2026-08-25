@@ -36,12 +36,13 @@ truncated scan can only *under-propose* work — never propose wrong work.
 
 ```mermaid
 flowchart LR
-    R1["1. preamble<br/>block timestamp +<br/>registry×3 + receiver×7<br/>(multicall)"] --> R2["2. round-2 multicall<br/>queue facts + pause flags"]
-    R2 --> R3["3. Controller balance"]
-    R3 --> R4["4. queueUpkeepStatus<br/>(reserved)"]
-    R4 --> R5["N. batchInfo + counts<br/>(chunked)"]
-    R5 --> R6["M. unprocessedUsers<br/>(oldest candidate only)"]
+    R1["1. block timestamp"] --> R2["2. registry×3 + receiver×6<br/>+ paused (multicall)"]
+    R2 --> R3["3. currentBatchId,<br/>MAX_BATCH_PROCESSING_TIME,<br/>3× paused (multicall)"]
+    R3 --> R4["4. Controller balance"]
+    R4 --> R5["N. batchInfo + counts<br/>cursor → currentBatchID<br/>(current included: PriceBatch)"]
+    R5 --> R6["M. unprocessedUsers<br/>(non-skippable candidates<br/>until one is affordable)"]
     R6 --> R7["K. requestInfo<br/>(chunked)"]
+    R7 --> R8["queueUpkeepStatus<br/>(reserved)"]
 ```
 
 Budget bookkeeping (`queue-keeper/reads.go`):
@@ -49,9 +50,12 @@ Budget bookkeeping (`queue-keeper/reads.go`):
 - `reservedReads = 2` held back for the cross-check view + write-path margin
 - Phase 1 keeps `Remaining() − 2` for the user/request phases — batches found
   without the reads to evaluate them are worse than batches not found
-- Users are read **only for the oldest processable candidate**: `Decide`
-  picks the first affordable batch, so reading further candidates spends
-  budget on batches that cannot be chosen this tick
+- Users are read for **non-skippable** priced batches, oldest first, until
+  one has an affordable prefix — the same walk as `Decide` /
+  `queueUpkeepStatus`. Expired heads skip the user read; an over-budget
+  in-window head is not skippable, so the next candidate is loaded rather
+  than stalling. Once a batch is affordable, later ids cannot be chosen
+  this tick.
 - Healthy small queues finish with 5–8 reads spare
 
 ## W2's read plan
@@ -59,21 +63,25 @@ Budget bookkeeping (`queue-keeper/reads.go`):
 ```mermaid
 flowchart LR
     S1["1. block timestamp"] --> S2["2. registry×5 +<br/>receiver thresholds (multicall)"]
-    S2 --> S3["3. queue cursor, AMM float + price,<br/>strategy list, fee bps (multicall)"]
+    S2 --> S3["3. cursor, currentBatchId bound,<br/>MAX_BATCH_PROCESSING_TIME,<br/>AMM float, strategy list, fee bps,<br/>pause flags (multicall)"]
     S3 --> S4["4. Controller balance"]
-    S4 --> S5["5. per-strategy ×6 sub-calls<br/>(multicall, chunked)"]
-    S5 --> S6["M. bounded redemption scan<br/>(≤25 batches, ≤50 users —<br/>mirrors the contract)"]
+    S4 --> S5["5. per-strategy ×7 sub-calls<br/>(incl. depositWeight;<br/>multicall, chunked)"]
+    S5 --> S6["M. [cursor, currentBatchId) headers<br/>≤25; users only if NeedsCostScan<br/>(priced, unexpired, has work)"]
     S6 --> S7["strategyUpkeepStatus<br/>(reserved)"]
 ```
 
 Unlike W1, W2's scan width is **not** budget-driven — it is contract-driven
-(`MaxBatchScan=25`, `MaxUsersCostScan=50`). If the budget cannot cover the
-bounded scan, the tick records `ScanTruncated=true` and `NeedsETH` may
-understate — surfaced via the divergence classification rather than silently
-changing the decision.
+(`MaxBatchScan=25`, `MaxUsersCostScan=50`). Phase 1 walks
+`[cursor, currentBatchId)` headers only (the current unpriced batch is not a
+liability). Phase 2 loads users only for priced, unexpired batches with work.
+If the budget cannot cover the bounded scan, the tick records
+`ScanTruncated=true` and `NeedsETH` may understate — surfaced via the
+divergence classification rather than silently changing the decision.
 
 ## What a pinned budget test looks for
 
-`TestReadPlanFitsBudget` (in each read-layer test file) asserts the fixed
-preamble plus cross-check still leaves reads for the scan — so adding one
-read to a preamble without adjusting the test fails CI, not production.
+`TestReadPlanFitsBudget` (`pkg/evmread`) is W1 arithmetic: the fixed preamble
+plus cross-check must still leave a scan deeper than the on-chain 25-batch
+window. Adding a preamble read without updating it fails CI, not production.
+W2's width is the contract cap (`TestScanCapsMatchTheContract`), not leftover
+budget.

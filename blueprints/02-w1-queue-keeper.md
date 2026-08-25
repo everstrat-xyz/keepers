@@ -18,9 +18,8 @@ flowchart TB
     BAL --> P1["Phase 1 — batch scan:<br/>batchInfo + unprocessedUsersCount per batch,<br/>chunked multicalls, cursor → currentBatchID<br/>(capped at maxBatchScan, default 250)"]
     P1 -- "budget runs out" --> TR["mark ScanTruncatedAt —<br/>scan degrades, tick does NOT abort"]
     P1 -- "done" --> P2
-    TR --> P2["Phase 2 — users of the OLDEST<br/>processable candidate only:<br/>unprocessedUsers(0, min(count, maxUsersPerUpkeep))"]
-    P2 --> P3["Phase 3 — requestInfo per user,<br/>chunked multicalls, budget-capped"]
-    P3 --> DEC
+    TR --> P2["Phase 2/3 — users + requestInfo<br/>for non-skippable candidates<br/>until one is affordable<br/>(expired skipped; over-budget<br/>heads continue)"]
+    P2 --> DEC
     SKIP --> DEC
 
     DEC["queue.Decide(state)<br/>(pure decision — see below)"]
