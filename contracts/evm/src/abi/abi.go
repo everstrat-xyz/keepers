@@ -7,9 +7,9 @@
 //
 // Two groups live here:
 //
-//   - Receivers (ICREReceiverBase, ICREQueueExecutor, ICREStrategyExecutor) —
-//     the contracts W1/W2 deliver reports to, plus their gas-bounded
-//     `*UpkeepStatus` cross-check views.
+//   - Executors (IKeeperExecutorBase, IQueueKeeperExecutor,
+//     IStrategyKeeperExecutor) — the Gelato-era contracts the keepers drive,
+//     plus their gas-bounded `*UpkeepStatus` cross-check views.
 //   - Reads (IRegistry, IController, IExitQueue, IAMM, IStrategyManager) —
 //     the off-chain view surface workflows scan before proposing an action.
 package abi
@@ -30,9 +30,9 @@ var files embed.FS
 type Name string
 
 const (
-	ICREReceiverBase     Name = "ICREReceiverBase"
-	ICREQueueExecutor    Name = "ICREQueueExecutor"
-	ICREStrategyExecutor Name = "ICREStrategyExecutor"
+	IKeeperExecutorBase     Name = "IKeeperExecutorBase"
+	IQueueKeeperExecutor    Name = "IQueueKeeperExecutor"
+	IStrategyKeeperExecutor Name = "IStrategyKeeperExecutor"
 
 	IRegistry        Name = "IRegistry"
 	IController      Name = "IController"
@@ -61,9 +61,9 @@ const (
 // All lists every vendored ABI. Used by tests to assert the embed set stays
 // in sync with the constants above.
 var All = []Name{
-	ICREReceiverBase,
-	ICREQueueExecutor,
-	ICREStrategyExecutor,
+	IKeeperExecutorBase,
+	IQueueKeeperExecutor,
+	IStrategyKeeperExecutor,
 	IRegistry,
 	IController,
 	IExitQueue,

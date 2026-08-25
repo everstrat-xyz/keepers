@@ -11,7 +11,7 @@ permissions:
 
 env:
   GO_VERSION: "1.25.3"
-  CRE_CLI_VERSION: v1.29.0
+  NODE_VERSION: "20"
 
 jobs:
   go:
@@ -29,21 +29,19 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      # The workflow mains are //go:build wasip1, so `./...` on a linux
-      # toolchain excludes every file in them and fails with "build constraints
-      # exclude all Go files". Host packages are addressed explicitly; the
-      # workflows get their own wasip1 steps.
+      # Only freeze-watch (W4) remains a Go CRE workflow; W1/W2 are Gelato tasks
+      # and live under web3-functions/. Its main is //go:build wasip1, so
+      # `./...` on a linux toolchain excludes it — host packages are addressed
+      # explicitly and the workflow gets its own wasip1 step.
       - name: go vet (host packages)
         run: go vet ./pkg/... ./contracts/...
 
       - name: go test (host packages)
         run: go test -race ./pkg/... ./contracts/...
 
-      - name: wasip1 vet + build (workflows)
+      - name: wasip1 vet + build (freeze-watch)
         run: |
-          GOOS=wasip1 GOARCH=wasm go vet ./queue-keeper/ ./strategy-keeper/ ./freeze-watch/
-          GOOS=wasip1 GOARCH=wasm go build -o /tmp/queue-keeper.wasm ./queue-keeper/
-          GOOS=wasip1 GOARCH=wasm go build -o /tmp/strategy-keeper.wasm ./strategy-keeper/
+          GOOS=wasip1 GOARCH=wasm go vet ./freeze-watch/
           GOOS=wasip1 GOARCH=wasm go build -o /tmp/freeze-watch.wasm ./freeze-watch/
 
       # CRE rejects a workflow over 20mb compressed (WASMCompressedBinarySizeLimit).
@@ -64,7 +62,7 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted="$(gofmt -l pkg contracts queue-keeper strategy-keeper freeze-watch)"
+          unformatted="$(gofmt -l pkg contracts freeze-watch)"
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
           fi
@@ -89,22 +87,47 @@ jobs:
           version: v2.12.2
           args: --timeout=5m ./pkg/... ./contracts/...
 
-      # The workflow mains only compile under wasip1, so they need a second
+      # The freeze-watch main only compiles under wasip1, so it needs a second
       # pass with the build target set. Without this the keeper logic — the
       # part most worth linting — is never linted at all.
-      - name: Lint workflows (wasip1)
+      - name: Lint freeze-watch (wasip1)
         uses: golangci/golangci-lint-action@v9
         env:
           GOOS: wasip1
           GOARCH: wasm
         with:
           version: v2.12.2
-          args: --timeout=5m ./queue-keeper/... ./strategy-keeper/... ./freeze-watch/...
+          args: --timeout=5m ./freeze-watch/...
 
-  simulate:
-    name: cre workflow simulate
+  # W1 queue-keeper — Gelato TypeScript Web3 Function. Typecheck + jest.
+  w3f:
+    name: web3-functions / queue-keeper
     runs-on: ubuntu-latest
-    needs: go
+    defaults:
+      run:
+        working-directory: web3-functions/queue-keeper
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web3-functions/queue-keeper/package-lock.json
+
+      # deno-bin's postinstall fetches a runtime binary from github releases;
+      # it is not needed for typecheck/jest and fails in restricted networks.
+      - run: npm install --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+
+  # W4 freeze-watch still simulates through CRE until its own migration lands
+  # (deferred). A skip is reported as a warning annotation and written to the
+  # run summary: silence is not the same as green.
+  simulate:
+    name: cre workflow simulate (freeze-watch)
+    runs-on: ubuntu-latest
+    needs: [go, w3f]
     steps:
       - uses: actions/checkout@v4
 
@@ -113,15 +136,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       # `cre workflow simulate` requires authentication: without a login or
-      # CRE_API_KEY it exits 1 with "Authentication required". It does NOT need
-      # CRE_ETH_PRIVATE_KEY — the CLI falls back to a default key for
-      # chain-write simulation — so the original gate watched the wrong secret
-      # and skipped forever.
-      #
-      # A skip here is reported as a warning annotation and written to the run
-      # summary. That is the whole point: the previous gate reported success
-      # while doing nothing, which hid both missing coverage and a broken CLI
-      # install. Silence is not the same as green.
+      # CRE_API_KEY it exits 1 with "Authentication required".
       - name: Check for CRE credentials
         id: creds
         env:
@@ -129,12 +144,12 @@ jobs:
         run: |
           if [ -z "${CRE_API_KEY}" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Simulate skipped::CRE_API_KEY is not set, so cre workflow simulate did not run. This job is NOT verifying the workflows."
+            echo "::warning title=Simulate skipped::CRE_API_KEY is not set, so cre workflow simulate did not run. This job is NOT verifying freeze-watch."
             {
               echo "### :warning: \`cre workflow simulate\` skipped"
               echo
               echo "\`CRE_API_KEY\` is not set in repository secrets, and the CRE CLI refuses to"
-              echo "simulate unauthenticated. **The workflows were not simulated in this run.**"
+              echo "simulate unauthenticated. **freeze-watch was not simulated in this run.**"
               echo
               echo "Add \`CRE_API_KEY\` (Organization → APIs in the CRE UI) to enable it."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -151,19 +166,19 @@ jobs:
           # straight out of /tmp also matched cre.tar.gz — which is what got
           # installed as the binary ("Exec format error").
           mkdir -p /tmp/cre-dist
-          curl -fsSL "https://github.com/smartcontractkit/cre-cli/releases/download/${CRE_CLI_VERSION}/cre_linux_amd64.tar.gz" \
+          curl -fsSL "https://github.com/smartcontractkit/cre-cli/releases/download/v1.29.0/cre_linux_amd64.tar.gz" \
             -o /tmp/cre.tar.gz
           tar -xzf /tmp/cre.tar.gz -C /tmp/cre-dist
           BIN="$(find /tmp/cre-dist -type f -name 'cre_*' | head -n1)"
           if [ -z "$BIN" ]; then
-            echo "::error::no cre binary found in the ${CRE_CLI_VERSION} release tarball"
+            echo "::error::no cre binary found in the release tarball"
             ls -la /tmp/cre-dist
             exit 1
           fi
           sudo install -m 0755 "$BIN" /usr/local/bin/cre
           cre version
 
-      - name: Simulate all workflows
+      - name: Simulate freeze-watch
         if: steps.creds.outputs.run == 'true'
         env:
           CRE_API_KEY: ${{ secrets.CRE_API_KEY }}
@@ -173,9 +188,5 @@ jobs:
           set -euo pipefail
           export SEPOLIA_RPC_URL="${SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}"
           go mod download
-          for wf in queue-keeper strategy-keeper freeze-watch; do
-            echo "::group::simulate $wf"
-            cre workflow simulate "$wf" --target staging-settings --non-interactive --trigger-index 0
-            echo "::endgroup::"
-          done
-          echo "### :white_check_mark: Simulated queue-keeper, strategy-keeper, freeze-watch" >> "$GITHUB_STEP_SUMMARY"
+          cre workflow simulate freeze-watch --target staging-settings --non-interactive --trigger-index 0
+          echo "### :white_check_mark: Simulated freeze-watch" >> "$GITHUB_STEP_SUMMARY"

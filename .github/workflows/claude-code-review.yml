@@ -78,49 +78,49 @@ jobs:
             constraints below and the reasoning behind them, and it is the
             standard this repo is held to.
 
-            These workflows run on a decentralised oracle network and deliver
-            signed reports to contracts that hold `KEEPER_ROLE` over user funds.
-            A bug here does not crash a server; it either moves money wrongly or
-            silently stops moving it at all. Review accordingly.
+            These tasks drive contracts that hold `KEEPER_ROLE` over user funds,
+            via Gelato tasks that the repo cannot fully test end-to-end before
+            deploy. A bug here does not crash a server; it either moves money
+            wrongly or silently stops moving it at all. Review accordingly.
 
             ## Check these repo-specific invariants first
 
             A generic review will miss all of them.
 
-            1. **No amounts in reports.** A report must never carry an
-               authoritative ETH amount, NAV, or price. Flag any new params
-               field, any `*big.Int` reaching a report builder, or any
-               relaxation of `queue.DecodeParams`'s exact-length check.
+            1. **No amounts in payloads.** A payload must never carry an
+               authoritative ETH amount, NAV, or price. Flag any new field in
+               W1's `Params`, any amount reaching `encode()`, or any relaxation
+               of `decode()`'s exact-length check in
+               `web3-functions/queue-keeper/src/params.ts`.
 
-            2. **Chain reads are capped at 15 per execution** (CRE
-               `ChainRead.CallLimit`, 5 kB response cap). Exceeding it aborts the
-               whole tick. Flag a `Call`/`Aggregate` inside a loop, a read added
-               to a fixed preamble without updating `TestReadPlanFitsBudget`, or
-               a plan that aborts instead of degrading when the budget runs out.
+            2. **The clock must be the observed block's, not `Date.now()`.**
+               Batch ages are compared against `createdAt` values recorded from
+               `block.timestamp`, so wall-clock time skews every `minBatchAge`
+               check. Flag any `Date.now()` / `new Date()` reaching a decision
+               input.
 
-            3. **The clock must be the observed block's, not `runtime.Now()`.**
-               The receiver rejects `observedAt > block.timestamp` with zero
-               tolerance, so wall-clock time fails every report. Flag any new
-               `runtime.Now()` used for `observedAt` or for age comparisons
-               against chain state.
+            3. **ethers v5 `BigNumber` must not leak into the decision engine.**
+               The Gelato SDK pins ethers v5, whose `Contract` calls return
+               `BigNumber` typed as `any`; the engine works in native `bigint`.
+               All coercion goes through the `w()` helper in `index.ts`. Flag
+               any read result assigned into `State`/`Batch`/`Request`
+               without it.
 
-            4. **Sequence is read from the receiver every tick**, never held in a
-               local counter.
+            4. **W1 may scan deeper than the contract; W2 may not.** W1's
+               executor validates per batch with no window, so a deeper scan is
+               a genuine win. W2's executor re-derives with the same bounded
+               helpers — which is why W2 has no off-chain code. Flag any change
+               that widens W2's caps or narrows W1's scan.
 
-            5. **W1 may scan deeper than the contract; W2 may not.** W1's
-               receiver validates per batch with no window, so a deeper scan is a
-               genuine win. W2's receiver re-derives with the same bounded
-               helpers, so being "more exact" makes every report revert. Flag any
-               change that widens W2's scan caps or narrows W1's.
+            5. **W4 (`freeze-watch/`) must not be able to write.** It is the
+               last CRE-era workflow here; flag any write-capable code added to
+               its dependency graph.
 
-            6. **W4 (`freeze-watch/`) must not be able to write.** Flag any
-               import of `pkg/crewrite` or `pkg/envelope` there.
+            6. **Golden test values must come from Solidity** (`cast`,
+               `chisel), never from TypeScript or Go. A round-trip against our
+               own encoder proves nothing. Flag hand-computed fixtures.
 
-            7. **Golden test values must come from Solidity** (`cast`, `chisel`),
-               never from Go. A round-trip against our own encoder proves
-               nothing. Flag hand-computed fixtures.
-
-            8. **Vendored ABIs are never hand-edited.** Flag a changed
+            7. **Vendored ABIs are never hand-edited.** Flag a changed
                `contracts/evm/src/abi/*.json` without a matching commit-hash
                update in `SOURCE.md`.
 
@@ -128,7 +128,8 @@ jobs:
 
             Correctness bugs, error handling that loses information, test
             coverage for the branches that matter, and anything that would
-            behave differently under CRE's constraints than it appears to.
+            behave differently under Gelato's execution model (or CRE's, for
+            freeze-watch) than it appears to.
 
             Prefer a small number of specific, actionable findings over a broad
             survey. If the PR is sound, say so plainly and briefly rather than

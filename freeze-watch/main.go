@@ -5,10 +5,10 @@
 //
 // # It cannot write on-chain
 //
-// W4 reads and notifies. There is no `writeReport` path here — this package
-// imports neither pkg/crewrite nor pkg/envelope, so actuation would require
-// adding an import that shows up in review. NAV-guardian pause actuation is a
-// separate epic gated on DAO sign-off (TECH_SPEC Phase 3).
+// W4 reads and notifies. There is no transaction path here — nothing in this
+// package's dependency graph can build or send one, so actuation would
+// require adding code that shows up in review. NAV-guardian pause actuation is
+// a separate epic gated on DAO sign-off (TECH_SPEC Phase 3).
 package main
 
 import (
@@ -38,11 +38,17 @@ type Config struct {
 	chains.Config
 	Schedule string `json:"schedule"`
 
-	// Receiver addresses, watched for liveness. Optional: a zero or absent
+	// Executor addresses, watched for liveness. Optional: a zero or absent
 	// address is skipped rather than failing the tick, since W4 should keep
 	// working through a partial deployment.
 	QueueExecutorAddress    string `json:"queueExecutorAddress"`
 	StrategyExecutorAddress string `json:"strategyExecutorAddress"`
+
+	// GelatoProxyAddress is the dedicated msg.sender Gelato uses for tasks on
+	// both executors. Optional: when set, isExecutorCaller(proxy) must return
+	// true or the keeper is reported bound-but-broken; when empty, only a
+	// non-zero allowlist count is checked.
+	GelatoProxyAddress string `json:"gelatoProxyAddress"`
 
 	// Thresholds override freezewatch.DefaultThresholds when non-zero.
 	OracleStaleAfterSeconds      uint64 `json:"oracleStaleAfterSeconds"`

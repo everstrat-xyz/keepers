@@ -153,14 +153,14 @@ func TestBatchEscapeHatch(t *testing.T) {
 func TestKeeperHealth(t *testing.T) {
 	th := freezewatch.DefaultThresholds()
 
-	t.Run("unbound receiver warns", func(t *testing.T) {
+	t.Run("unbound executor warns", func(t *testing.T) {
 		o := healthy()
 		o.Keepers[0].Bound = false
 		a, ok := kinds(freezewatch.Evaluate(o, th))[freezewatch.KindReceiverUnbound]
 		if !ok {
-			t.Fatal("no receiver-unbound alert")
+			t.Fatal("no executor-unbound alert")
 		}
-		if !strings.Contains(a.Message, "rejects every report") {
+		if !strings.Contains(a.Message, "perform() reverts") {
 			t.Errorf("message does not explain the consequence: %q", a.Message)
 		}
 	})

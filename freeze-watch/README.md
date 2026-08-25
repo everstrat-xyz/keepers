@@ -2,21 +2,25 @@
 
 Observability for freeze precursors and keeper health. **No on-chain writes.**
 
-That is structural, not a convention: this package imports neither
-`pkg/crewrite` nor `pkg/envelope`, so there is no code path from an alert to a
-report. Adding one would mean adding an import, which is visible in review. NAV
-guardian *actuation* is a separate epic gated on DAO sign-off (TECH_SPEC
-Phase 3).
+That is structural, not a convention: nothing in this workflow's dependency
+graph can build or send a transaction, so there is no code path from an alert
+to one. Adding one would mean adding write-capable code, which is visible in
+review. NAV guardian *actuation* is a separate epic gated on DAO sign-off
+(TECH_SPEC Phase 3).
+
+> W4 is the last CRE-era workflow in this repo — W1/W2 migrated to Gelato. Its
+> own migration is deferred; until then its keeper-health check reads the
+> Gelato-era executor surface (`executorCallerCount`, `isExecutorCaller`).
 
 ## Alerts
 
 | Kind | Severity | Fires when |
 | --- | --- | --- |
-| `protocol-paused` | critical | Controller / ExitQueue / AMM / StrategyManager / a receiver is paused |
+| `protocol-paused` | critical | Controller / ExitQueue / AMM / StrategyManager / an executor is paused |
 | `oracle-stale` | critical | a feed's price is older than `oracleStaleAfterSeconds` |
 | `batch-escape-hatch` | warning → critical | a priced batch nears, then reaches `pricedAt + MAX` (`now ≥` deadline — ~1s before W1/W2's strict `>`) |
-| `keeper-stalled` | critical | upkeep was available but no report has been accepted for `keeperStalledAfterSeconds` |
-| `receiver-unbound` | warning | neither `expectedWorkflowId` nor `expectedAuthor` is set, so the receiver rejects everything |
+| `keeper-stalled` | critical | upkeep was available but no perform has succeeded for `keeperStalledAfterSeconds` |
+| `receiver-unbound` | warning | the executor's caller allowlist is empty, or the configured Gelato proxy is missing from it — `perform()` reverts for every task |
 | `upkeep-backlog` | warning | `backlogWarnBatches` batches are waiting behind the cursor |
 | `strategy-unhealthy` | warning | a live strategy reports unhealthy |
 | `strategy-call-failure` | warning | a `Strategy*Failed` event was observed |

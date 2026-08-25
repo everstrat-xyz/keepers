@@ -1,311 +1,191 @@
-# EverStrat Keepers (CRE)
+# EverStrat Keepers (Gelato)
 
-Go workflows for the [Chainlink Runtime Environment (CRE)](https://docs.chain.link/cre) that drive EverStrat’s keeper plane:
+Automation for EverStrat's keeper plane, on the [Gelato Network](https://gelato.network).
 
-| Package | Role | On-chain consumer |
-| --- | --- | --- |
-| `queue-keeper/` | W1 — exit-queue automation | `CREQueueExecutor` |
-| `strategy-keeper/` | W2 — strategy automation | `CREStrategyExecutor` |
-| `freeze-watch/` | W4 — freeze precursors and keeper health (read-only) | — |
-| `pkg/` | Shared Envelope / report / chain-config code used by both | — |
+The Chainlink CRE workflows this repo was built on were retired when Chainlink
+Automation was sunset and CRE turned out not to be permissionless. W1 and W2
+now run as Gelato tasks; W4 remains a CRE-era Go workflow pending its own
+migration (deferred).
 
-Language is **Go** (WASM / `wasip1`). W1 and W2 are both implemented and run in **shadow mode** — they decide an action each tick and cross-check it against the on-chain view, but do not write. Live `writeReport` stays off until the Sepolia cutover ([#6](https://github.com/everstrat-xyz/keepers/issues/6)).
+| Component | Role | On-chain target | Model |
+| --- | --- | --- | --- |
+| `web3-functions/queue-keeper/` | W1 — exit-queue automation | `QueueKeeperExecutor` | Gelato **TypeScript Web3 Function** (deep scan off-chain) |
+| — (on-chain) | W2 — strategy automation | `StrategyKeeperExecutor` | Gelato **solidity resolver** — `checker()` lives on the contract |
+| `freeze-watch/` | W4 — freeze precursors and keeper health (read-only) | — | CRE workflow (Go, deferred) |
+| `pkg/` | Shared Go code used by W4 | — | — |
+
+## Why the split
+
+W1's whole value is scanning **deeper than the gas-bounded on-chain view**:
+`QueueKeeperExecutor.queueUpkeepStatus()` stops after `MAX_BATCH_SCAN` (25)
+batches, while the Web3 Function walks cursor→current with no such cap, then
+claims a batch the view could not reach. `perform()` re-validates per batch
+with no window applied, so the claim is accepted.
+
+W2's decisions are all bounded re-derivations — there is no depth to gain — so
+it uses the contract's own `checker()` and needs no off-chain code at all.
+
+Both executors authenticate the same way: Gelato calls `perform()` from a
+dedicated proxy address, which must be in the executor's `allowExecutorCaller`
+allowlist. An empty allowlist means `perform()` always reverts
+(`KeeperExecutorNoAllowedCallers`) — the executors deploy inert and only act
+once a task is created and its proxy bound.
 
 ## Prerequisites
 
-- **Go** `1.25.3+` (`go version`)
-- **CRE CLI** (documented against **v1.29.0**; newer is fine)
-- **CRE account** in the EverStrat org ([create / join](https://docs.chain.link/cre/account))
-- Optional for local simulate: any EOA private key in `.env` (Sepolia ETH only needed once you broadcast / write onchain)
+- **Node** `20+` for the Web3 Function (`web3-functions/queue-keeper`)
+- **Go** `1.25.3+` for W4 and `pkg/`
+- A [Gelato](https://app.gelato.network) account with 1Balance funded
+- **CRE CLI** (`cre`) — only for W4 simulate, until its migration
 
-### Install CRE CLI (macOS / Linux)
-
-```bash
-curl -sSL https://app.chain.link/cre/install.sh | bash
-cre version
-```
-
-Manual install: download the matching asset from [cre-cli releases](https://github.com/smartcontractkit/cre-cli/releases), verify SHA-256, rename to `cre`, and put it on your `PATH`. Details: [CLI installation](https://docs.chain.link/cre/getting-started/cli-installation/macos-linux).
-
-### Authenticate
+## Local checks
 
 ```bash
-cre login
-cre whoami
+make check     # Go: fmt + vet + lint + test + wasip1 build; TS: typecheck + jest
+make test      # Go tests only
+make w3f       # Web3 Function typecheck + tests
+
+# Or directly:
+cd web3-functions/queue-keeper
+npm install --ignore-scripts   # deno-bin's postinstall is not needed locally
+npm run typecheck
+npm test
 ```
 
-CI / headless: set `CRE_API_KEY` (Organization → APIs in the CRE UI; requires deploy Early Access). See [Authentication](https://docs.chain.link/cre/reference/cli/authentication).
+## Deploying W1 (queue-keeper Web3 Function)
 
-### Confirm org enablement (required once)
+The full sequence — task creation, proxy discovery, allowlist binding, and
+verification — is the runbook: [`docs/GELATO_CUTOVER.md`](docs/GELATO_CUTOVER.md).
 
-Authoritative chain + mock-forwarder list for **your** tenant:
+Short version:
 
-```bash
-cre workflow supported-chains
-cre workflow supported-chains --output json   # scripting
-cre account access                            # deploy Early Access status
-cre registry list                             # private vs onchain registries
-```
+1. Deploy the executors (`DeployKeeperExecutors` in
+   `everstrat-xyz/contracts`) — they come up **inert** (no allowed callers).
+2. Create the Gelato task (`web3-functions/queue-keeper`, time-based trigger).
+3. Read the task's dedicated proxy address from the Gelato dashboard.
+4. `allowExecutorCaller(proxy)` on `QueueKeeperExecutor` (ADMIN_ROLE).
+5. Verify: `checker()`/simulate shows canExec, and a dry `perform()` from the
+   proxy path succeeds.
 
-If `supported-chains` fails, the org is not enabled for workflows yet — fix that before implementing W1/W2.
-
-## KeystoneForwarder addresses
-
-Re-verified from the [Forwarder Directory](https://docs.chain.link/cre/guides/workflow/using-evm-client/forwarder-directory-go) (docs last updated **2026-06-24**). **Do not trust stale tables** — re-check the directory and `cre workflow supported-chains` before deploying receivers.
-
-| Network | CRE chain name | Production `KeystoneForwarder` | Simulation `MockKeystoneForwarder` |
-| --- | --- | --- | --- |
-| Ethereum Sepolia | `ethereum-testnet-sepolia` | `0xF8344CFd5c43616a4366C34E3EEE75af79a74482` | `0xF8344CFd5c43616a4366C34E3EEE75af79a74482` |
-| Ethereum Mainnet | `ethereum-mainnet` | `0x0b93082D9b3C7C97fAcd250082899BAcf3af3885` | `0x0b93082D9b3C7C97fAcd250082899BAcf3af3885` |
-
-CCIP chain selectors used in workflow config / `CREReceiverBase`:
-
-| Network | `chainSelector` (decimal string) |
-| --- | --- |
-| Ethereum Sepolia | `16015286601757825753` |
-| Ethereum Mainnet | `5009297550715157269` |
-
-Pass the **production** forwarder into `CREQueueExecutor` / `CREStrategyExecutor` constructors (`KEYSTONE_FORWARDER` in contracts deploy scripts). Simulation consumers that validate `msg.sender` against a forwarder must use the mock address from `supported-chains` for that tenant.
-
-Both tables are compiled into [`pkg/chains`](pkg/chains/chains.go) and pinned by unit tests, so a config that names a chain gets the right selector and forwarder without retyping them. Keep the two in sync when the directory changes.
-
-> Older samples sometimes cite Sepolia mock `0x15fC6ae953E024d975e77382eEeC56A9101f9F88`. That address is **not** what the current Forwarder Directory lists for Sepolia — treat it as stale unless your org’s `supported-chains` output says otherwise.
-
-## Fresh clone → first simulate
-
-```bash
-git clone https://github.com/everstrat-xyz/keepers.git
-cd keepers
-
-# Tooling
-go version   # >= 1.25.3
-cre version
-cre login && cre whoami
-cre workflow supported-chains
-
-# Config
-cp .env.example .env
-# set CRE_ETH_PRIVATE_KEY (64 hex chars, no 0x) and SEPOLIA_RPC_URL
-
-go mod tidy
-
-# Scaffold ticks (no writeReport yet)
-cre workflow simulate queue-keeper --target staging-settings --trigger-index 0
-cre workflow simulate strategy-keeper --target staging-settings --trigger-index 0
-```
-
-Point configs at deployed contracts by editing `queue-keeper/config.*.json` and `strategy-keeper/config.*.json`:
-
-- `registryAddress` — EverStrat `Registry` proxy
-- `queueExecutorAddress` — `CREQueueExecutor`
-- `strategyExecutorAddress` — `CREStrategyExecutor`
-- keep `shadowMode: true` until the Sepolia cutover issue enables `writeReport`
-
-## Funding & spend model
-
-CRE workflow **execution** is metered in **credits** (see Total Workflow Spend / Credits Used in the [CRE workflows UI](https://app.chain.link/cre/workflows)). Monitor spend after deploy; W4 will alert on low balance / silent stop.
-
-Separately you may need gas:
-
-| What | Funding |
-| --- | --- |
-| Local `cre workflow simulate` | Private key in `.env` (no gas if not broadcasting) |
-| Deploy / lifecycle on **private** registry | CRE session only — no ETH for registry ops |
-| Deploy / lifecycle on **onchain** registry (`onchain:ethereum-mainnet`) | Linked key (`cre account link-key`) + **ETH on Ethereum Mainnet** for Workflow Registry txs |
-| Onchain `writeReport` delivery | DON path via KeystoneForwarder; consumer contracts must already be deployed and bound |
-
-Historical Automation used LINK upkeep balances; CRE’s UI bills **credits**. Keep the org funded/credited before relying on live keepers.
-
-## Secrets
-
-1. Declare names in `secrets.yaml` (`secretsNames`).
-2. For simulation: put values in `.env` / the environment.
-3. For deployed workflows: `cre secrets create|update|list|delete` against the Vault DON.
-
-Workflow code uses `runtime.GetSecret()` either way. See [Managing Secrets](https://docs.chain.link/cre/guides/workflow/secrets).
-
-## Deploy (shadow / private registry)
-
-Default `workflow.yaml` targets use `deployment-registry: "private"` (no linked wallet / Mainnet gas for registry ops).
-
-```bash
-cre workflow deploy queue-keeper --target staging-settings
-cre workflow deploy strategy-keeper --target staging-settings
-
-cre workflow get queue-keeper --target staging-settings
-cre workflow pause queue-keeper --target staging-settings   # as needed
-cre workflow activate queue-keeper --target staging-settings
-```
-
-Onchain registry + identity binding for live `writeReport` are covered by the Sepolia cutover issue — leave `shadowMode: true` until then.
+W2 needs no task-side code: create a resolver task pointed at
+`StrategyKeeperExecutor.checker()` and allowlist its proxy the same way.
 
 ## Repo layout
 
 ```text
-.
-├── project.yaml           # RPC targets (local / staging / production)
-├── secrets.yaml           # Secret name → env var map
-├── .env.example
-├── go.mod                 # Single module for all workflows
-├── Makefile               # make check = vet + test + wasip1 build
-├── docs/
-│   ├── envelope.md        # Envelope rules W1/W2 must obey
-│   ├── READ_BUDGET.md     # CRE's 15-read limit and how W1/W2 fit it
-│   └── LOCAL_FORK.md      # Run a workflow against a real deployment
-├── scripts/                # Solidity-derived fixture generators
-│                           #   (cast / chisel produce the golden values)
-├── contracts/evm/src/
-│   ├── abi/               # Vendored ABIs + Go accessors (see SOURCE.md)
-│   └── keystone/          # Keystone-related artifacts
+├── web3-functions/
+│   └── queue-keeper/      # W1 — Gelato TypeScript Web3 Function
+│       ├── index.ts        # tick: read state, decide, return calldata
+│       └── src/            # decision engine (pure, unit-tested)
+├── freeze-watch/           # W4 — CRE-era Go workflow (deferred)
 ├── pkg/
-│   ├── envelope/          # abi.encode(Envelope) codec + staleness guards
-│   ├── queue/             # W1 actions + params (no amounts)
-│   ├── strategy/          # W2 actions (action-only reports)
-│   ├── keystone/          # Workflow-identity metadata helpers
-│   ├── solmath/           # Mirrors of the contracts' Math library
-│   ├── evmread/           # CRE reads: ABI, Multicall3 batching, read budget
-│   ├── crewrite/          # DON-signed writeReport delivery
-│   ├── chains/            # Per-chain constants + config validation
-│   ├── registry/          # Registry keys and role identifiers
-│   └── freezewatch/       # W4 alert thresholds and payloads
-├── queue-keeper/          # W1 — implemented, shadow mode
-├── strategy-keeper/       # W2 — implemented, shadow mode
-└── freeze-watch/          # W4 — observability only, no writes
+│   ├── chains/             # Per-chain constants + config validation
+│   ├── evmread/            # CRE reads: ABI, Multicall3 batching, budget (W4)
+│   ├── registry/           # Registry keys and role identifiers
+│   └── freezewatch/        # W4 alert thresholds and payloads
+├── contracts/evm/src/abi/  # Vendored contract ABIs + Go accessors
+├── docs/
+│   ├── GELATO_CUTOVER.md   # The cutover runbook
+│   └── LOCAL_FORK.md       # Run W4 against a real deployment
+└── blueprints/             # Design notes (W4 retained; W1/W2 historical
+                            #  CRE blueprints removed with the Go workflows)
 ```
 
 ## The address book
 
-`pkg/registry` is the one place to get a contract address or its ABI, mirroring
-how nothing on-chain stores its peers' addresses — it holds the Registry and
-asks it. Only `registryAddress` is configured; everything else is derived.
+Only `registryAddress` is configured; every other protocol address is resolved
+from the Registry at tick time, so a redeploy that re-registers a contract
+cannot leave the keeper pointed at a dead address.
 
-```go
-p, err := registry.Resolve(caller, registryAddress,
-    registry.Controller, registry.ExitQueue, registry.AMM)
+The same rule holds in the Web3 Function (`index.ts`): `controller`, `exitQueue`
+and `amm` all come from `registry.getContractByKey(...)`, keyed by
+`keccak256("CONTROLLER")` etc. — the same constants `Auth.sol` uses.
 
-exitQueue, _ := p.ExitQueue()
-calls := []evmread.SubCall{
-    exitQueue.Sub("currentBatchId"),   // address and ABI travel together
-    exitQueue.Paused(),                // Pausable is inherited, so it has its own builder
-}
-```
+## Hard constraints carried over from the CRE era
 
-Two properties worth keeping:
+**A payload must never carry an authoritative amount.** No ETH amount, NAV, or
+price — params are claims and hints only. The executors re-derive everything
+from live state; the discipline exists so a future edit cannot start trusting a
+value it should verify:
 
-- **One chain read** for the whole book, however many keys. Use `ResolveWith`
-  to fold your own independent reads into the same one — against a budget of 15
-  per execution, a spare round trip is expensive.
-- **Address and ABI cannot be mis-paired.** A raw `(address, abiName)` call site
-  can send the ExitQueue's address the Controller's selectors; the call then
-  reverts somewhere far from the mistake. A `Contract` carries both.
+- W1 params are a batch id and an index range, nothing else
+  (`web3-functions/queue-keeper/src/params.ts`).
+- `decode()` enforces the **exact** wire length per action, because all
+  layouts are static and a smuggled amount can only appear as a trailing word
+  that Solidity's `abi.decode` would silently ignore.
 
-The key → ABI mapping is asserted once, in `TestBoundABIsAreVendoredAndUsable`,
-rather than re-derived at each call site.
+**The clock is the observed block's.** Age comparisons use `block.timestamp`
+of the block the state was read at, never `Date.now()` — the wall clock can
+sit ahead of the chain, and minBatchAge checks against it would fail every
+tick.
 
-## Shared packages
+**W1 may scan deeper than the contract; W2 may not.** This asymmetry is in the
+contracts: `QueueKeeperExecutor._processReport` validates a `ProcessRequests`
+claim per batch with no window (so the deep scan is a genuine win), while
+`StrategyKeeperExecutor` re-derives quantities with the same bounded helpers
+the view uses.
 
-Both workflows encode reports through the same code, so W1 and W2 cannot drift
-from each other or from `CREReceiverBase`.
+**W4 cannot write.** `freeze-watch/` has no code path from an Alert to a
+report. That guarantee is an import away from breaking, which is exactly why
+it is spelled out here.
 
-| Package | What it gives you |
-| --- | --- |
-| `pkg/envelope` | `abi.encode(Envelope)` codec, plus `Validate` / `NextSequence` / `Deadline` mirroring the receiver's chain, replay and staleness guards |
-| `pkg/queue` | W1's decision engine: affordability model, cursor logic, params encoders, divergence classification |
-| `pkg/strategy` | W2's decision engine: priority order, redemption cost model, action-only `Report.Build` |
-| `pkg/keystone` | Workflow name → `bytes10`, 64-byte metadata encode/decode, and a binding pre-flight check for the cutover |
-| `pkg/chains` | Chain selectors and forwarder addresses, plus `Resolve` to validate a workflow's `config.*.json` |
-| `pkg/registry` | The protocol address book — the Go mirror of `Registry.sol` + `Auth.sol`. Resolves every contract from the Registry in one chain read and binds each address to its ABI |
-| `pkg/solmath` | Transcriptions of the contracts' `Math` library, so off-chain affordability matches on-chain to the wei |
-| `pkg/evmread` | CRE EVM reads with ABI packing, Multicall3 batching, and the read budget |
-| `pkg/crewrite` | DON-signed `writeReport` delivery, shared by W1/W2 |
-| `pkg/freezewatch` | W4's alert evaluation — pure thresholds in, alerts out |
-| `contracts/evm/src/abi` | Vendored contract ABIs, parsed on demand |
+## Testing conventions
 
-**Hard constraint:** a report must never carry an authoritative ETH amount, NAV,
-or price — params are claims and hints only. The APIs above are shaped so that
-is not expressible, and unit tests reject amount-bearing params.
+### Golden values come from Solidity, never from TS
 
-Read [`docs/envelope.md`](docs/envelope.md) and [`docs/READ_BUDGET.md`](docs/READ_BUDGET.md) before writing W1/W2 logic: it
-covers the `sequence`, `observedAt` and `MAX_REPORT_AGE` rules, the
-`ProcessRequests` prefix constraint, and the identity-binding rules.
+A round-trip against our own encoder passes no matter how wrong the layout is.
+The TS test fixtures reuse the exact hex values the Go suite generated with
+`cast abi-encode` / `chisel` (a real Solidity evaluator) — see the comments in
+`src/solmath.test.ts` and `src/params.test.ts`.
 
-### Local checks
+### Contract semantics are transcribed, not reimplemented
 
-```bash
-make check      # go vet + go test (host) + wasip1 build (workflows)
-make test
-make fixtures   # regenerate Solidity-derived fixtures (needs Foundry + jq)
-```
+`src/solmath.ts` mirrors the contracts' `Math` library including truncating
+division and the strict `<` in `isRelativelyLessThan`. The affordability walk
+breaks at the first request that overruns the balance — it does not skip an
+expensive request to fit cheaper ones behind it. "Close enough" produces a
+keeper that proposes work the contract refuses.
 
-Unit tests cover the decision logic, but only the **local fork harness**
-exercises the EVM read path against a real deployment — see
-[`docs/LOCAL_FORK.md`](docs/LOCAL_FORK.md). It is what caught CRE's 15-read
-limit and the block-timestamp-vs-wall-clock bug; run it before trusting a change
-to `queue-keeper/reads.go`.
+### Enum ordinals are pinned
 
-```bash
-cre workflow simulate queue-keeper --target local-settings --non-interactive --trigger-index 0
-```
+`Action.None/PriceBatch/ProcessRequests/AdvanceCursor` are 0/1/2/3, matching
+`IQueueKeeperExecutor.QueueAction`. Reordering the Solidity enum without
+updating the TS enum silently retargets every payload — pinned by
+`src/params.test.ts`.
 
-Note that `go test ./...` does **not** work from a host toolchain: the workflow
-mains are `//go:build wasip1`, so those directories have no buildable files on
-linux/darwin. Use `./pkg/... ./contracts/...`, as the Makefile and CI do.
+### ethers v5 → bigint, one coercion point
 
-## Automated PR review
-
-`.github/workflows/claude-code-review.yml` reviews every PR with Claude Code,
-mirroring `everstrat-xyz/contracts`. `.github/workflows/claude.yml` answers
-`@claude` mentions in issues, PR comments and reviews.
-
-The review prompt is aimed at this repo's specific failure modes rather than
-generic code quality — the no-amounts guarantee, CRE's 15-read budget, the
-block-timestamp rule, the W1/W2 scan asymmetry, and Solidity-derived fixtures.
-[`CLAUDE.md`](CLAUDE.md) holds the reasoning behind each, and is the standard
-the reviewer applies.
-
-**Requires `CLAUDE_CODE_OAUTH_TOKEN`** in repository secrets:
-
-```bash
-claude setup-token
-gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo everstrat-xyz/keepers
-```
-
-Without it both workflows skip with a warning annotation and a run-summary note
-saying the PR was **not** reviewed — an unreviewed PR must never look like a
-reviewed one.
-
-To review an existing PR (for example one opened before this landed):
-
-```bash
-gh workflow run claude-code-review.yml --repo everstrat-xyz/keepers -f pr_number=11
-```
+The Gelato SDK pins ethers v5, whose `Contract` calls return `BigNumber`. The
+decision engine works in native `bigint`. All conversion goes through one
+`w()` helper at the read boundary in `index.ts`, so a `BigNumber` leaking
+into `decide()` cannot happen silently.
 
 ## CI baseline
 
 GitHub Actions (`.github/workflows/ci.yml`):
 
-1. **`vet / test / lint`** — module tidy check, `go vet` + `go test -race` on the host packages, a `wasip1` vet + build of all three workflows, a compressed-size check against CRE's 20 MB limit, and `gofmt`.
-2. **`golangci-lint`** — host packages, then a second pass with `GOOS=wasip1` so the workflow mains (the keeper logic most worth linting) are covered at all. Requires **v2**: v1 refuses to run when built with an older Go than the module targets, and v2 binaries need `golangci-lint-action@v7` or newer.
-3. **`cre workflow simulate`** — all three workflows against `staging-settings`, gated on `CRE_API_KEY`.
+1. **go** — module tidy check, vet + `-race` tests on `pkg/...`/`contracts/...`,
+   a wasip1 build of freeze-watch with the CRE 20 MB compressed-size check,
+   and gofmt.
+2. **lint** — golangci-lint v2, host pass plus a wasip1 pass for freeze-watch.
+3. **w3f** — `npm install --ignore-scripts`, typecheck, and jest for the
+   queue-keeper Web3 Function.
+4. **simulate** — freeze-watch through `cre workflow simulate`, gated on
+   `CRE_API_KEY`; a skip is a loud warning annotation, never a silent pass.
 
-| Secret | Needed for | If unset |
-| --- | --- | --- |
-| `CRE_API_KEY` | `cre workflow simulate` (the CLI refuses to run unauthenticated) | simulate skips with a **warning annotation and a run-summary note** |
-| `SEPOLIA_RPC_URL` | avoiding public-RPC rate limits | falls back to a public endpoint |
-| ~~`CRE_ETH_PRIVATE_KEY`~~ | nothing | the CLI uses a default key for chain-write simulation |
+`fork-e2e.yml` (scheduled/manual) deploys the protocol to an anvil Sepolia
+fork, refresh-checks the vendored ABIs against that build, and simulates
+freeze-watch against it.
 
-The original gate watched `CRE_ETH_PRIVATE_KEY` — the wrong secret — and skipped **silently**, so the job reported success while doing nothing. That hid two real bugs at once: no simulate coverage, and a CRE CLI install that had been installing the release tarball as the binary since the scaffold. A skipped job now says so loudly; silence is not the same as green.
+## Automated PR review
 
-### fork-e2e (scheduled / manual)
-
-`.github/workflows/fork-e2e.yml` deploys the protocol to an anvil Sepolia fork and runs every workflow against it, failing on `divergence=bug` or a stale vendored ABI. It is **not** on PRs: it deploys from `everstrat-xyz/contracts`, so it can go red for reasons outside the PR, and a job that does that trains people to ignore red. Run it via `workflow_dispatch` before merging anything that touches a `reads.go`.
-
-Full simulate/lint matrix expansion: [issue #8](https://github.com/everstrat-xyz/keepers/issues/8).
+`.github/workflows/claude-code-review.yml` reviews every PR with Claude Code,
+mirroring `everstrat-xyz/contracts`. The review prompt targets this repo's
+specific failure modes; [`CLAUDE.md`](CLAUDE.md) holds the reasoning and is
+the standard the reviewer applies.
 
 ## Useful links
 
-- [CRE docs](https://docs.chain.link/cre)
-- [Project configuration (Go)](https://docs.chain.link/cre/reference/project-configuration-go)
-- [Forwarder Directory](https://docs.chain.link/cre/guides/workflow/using-evm-client/forwarder-directory-go)
-- [Deploying workflows](https://docs.chain.link/cre/guides/operations/deploying-workflows)
-- Contracts CRE receivers: `CREQueueExecutor`, `CREStrategyExecutor` in `everstrat-xyz/contracts`
+- [Gelato Web3 Functions docs](https://docs.gelato.network/web3-functions)
+- [Gelato dedicated msg.sender](https://docs.gelato.network/developer-products/web3-functions/quick-start/advanced/dedicated-msg-sender)
+- Contracts: `QueueKeeperExecutor`, `StrategyKeeperExecutor` in `everstrat-xyz/contracts`

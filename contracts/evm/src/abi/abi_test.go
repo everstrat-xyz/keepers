@@ -27,33 +27,33 @@ func TestGetUnknownABI(t *testing.T) {
 	}
 }
 
-// TestReceiverSurface pins the parts of the receiver ABIs the keepers actually
+// TestExecutorSurface pins the parts of the executor ABIs the keepers actually
 // call. A contracts-side rename would otherwise surface as a runtime pack
 // failure inside a deployed workflow rather than a failing test here.
-func TestReceiverSurface(t *testing.T) {
+func TestExecutorSurface(t *testing.T) {
 	tests := []struct {
 		abi     everabi.Name
 		methods []string
 	}{
 		{
-			abi: everabi.ICREReceiverBase,
+			abi: everabi.IKeeperExecutorBase,
 			methods: []string{
-				"onReport",
-				"lastSequence", "CHAIN_SELECTOR", "MAX_REPORT_AGE", "FORWARDER",
-				"expectedWorkflowId", "expectedAuthor", "expectedWorkflowName",
+				"allowExecutorCaller", "removeExecutorCaller", "isExecutorCaller",
+				"executorCallerCount", "pause", "unpause",
 			},
 		},
 		{
-			abi: everabi.ICREQueueExecutor,
+			abi: everabi.IQueueKeeperExecutor,
 			methods: []string{
-				"queueUpkeepStatus", "nextLiveBatchIdToProcess", "nextBatchIdToProcess",
-				"affordableRequests", "minBatchAge", "maxUsersPerUpkeep",
+				"checker", "perform", "queueUpkeepStatus", "nextLiveBatchIdToProcess",
+				"nextBatchIdToProcess", "affordableRequests", "minBatchAge",
+				"maxUsersPerUpkeep",
 			},
 		},
 		{
-			abi: everabi.ICREStrategyExecutor,
+			abi: everabi.IStrategyKeeperExecutor,
 			methods: []string{
-				"strategyUpkeepStatus", "pendingRedemptionNeedsETH",
+				"checker", "perform", "strategyUpkeepStatus", "pendingRedemptionNeedsETH",
 				"controllerReserveETH", "minDepositETH", "minWithdrawETH",
 				"minHarvestETH", "syncInterval", "lastSyncAt",
 				"exitLiquidityTargetETH", "minExitLiquidityTopUpETH",
@@ -74,7 +74,7 @@ func TestReceiverSurface(t *testing.T) {
 			abi: everabi.IStrategyManager,
 			methods: []string{
 				// depositWeight gates _depositCapacityAvailable since contracts
-				// PR #43 (R4-M-04); W2 reads it per strategy.
+				// PR #43 (R4-M-04); the strategy keeper reads it per strategy.
 				"strategies", "depositWeight", "isStrategyInDepositCooldown",
 				"pendingPerformanceFeeInETH", "performanceFeeBps",
 			},
@@ -92,11 +92,11 @@ func TestReceiverSurface(t *testing.T) {
 	}
 }
 
-// TestUpkeepStatusReturnShapes pins the cross-check views' return tuples. W1/W2
-// decode these on every tick, and a silently-changed arity would misread the
-// recommended action.
+// TestUpkeepStatusReturnShapes pins the cross-check views' return tuples. The
+// keepers decode these on every tick, and a silently-changed arity would
+// misread the recommended action.
 func TestUpkeepStatusReturnShapes(t *testing.T) {
-	queueStatus, err := everabi.Method(everabi.ICREQueueExecutor, "queueUpkeepStatus")
+	queueStatus, err := everabi.Method(everabi.IQueueKeeperExecutor, "queueUpkeepStatus")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestUpkeepStatusReturnShapes(t *testing.T) {
 		t.Errorf("queueUpkeepStatus action type = %s, want uint8 (the QueueAction enum)", got)
 	}
 
-	strategyStatus, err := everabi.Method(everabi.ICREStrategyExecutor, "strategyUpkeepStatus")
+	strategyStatus, err := everabi.Method(everabi.IStrategyKeeperExecutor, "strategyUpkeepStatus")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,23 +119,28 @@ func TestUpkeepStatusReturnShapes(t *testing.T) {
 	}
 }
 
-// TestOnReportSignature is the one signature that must never drift: it is how
-// the KeystoneForwarder reaches the receiver.
-func TestOnReportSignature(t *testing.T) {
-	m, err := everabi.Method(everabi.ICREReceiverBase, "onReport")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := m.Sig, "onReport(bytes,bytes)"; got != want {
-		t.Errorf("onReport signature = %s, want %s", got, want)
+// TestCheckerReturnShape pins the Gelato resolver surface: canExec plus the
+// execPayload the W3F must reproduce byte-for-byte for the same action.
+func TestCheckerReturnShape(t *testing.T) {
+	for _, name := range []everabi.Name{everabi.IQueueKeeperExecutor, everabi.IStrategyKeeperExecutor} {
+		m, err := everabi.Method(name, "checker")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(m.Outputs); got != 2 {
+			t.Errorf("%s.checker returns %d values, want 2 (canExec, execPayload)", name, got)
+		}
+		if got := m.Outputs[0].Type.String(); got != "bool" {
+			t.Errorf("%s.checker canExec type = %s, want bool", name, got)
+		}
 	}
 }
 
 // TestControllerActualReturnShapes pins the R4-L-05 ABI change: Controller
 // deposit/withdraw/harvest now return the StrategyManager actual, which
-// CREStrategyExecutor emits on StrategyUpkeepPerformed. The keepers never call
-// these (the receiver does), but a return-shape drift here means the vendored
-// ABI is stale relative to the deployed executor.
+// StrategyKeeperExecutor emits on StrategyUpkeepPerformed. The keepers never
+// call these (the executor does), but a return-shape drift here means the
+// vendored ABI is stale relative to the deployed executor.
 //
 // Overloads are keyed by name in the parsed ABI (go-ethereum renames the second
 // occurrence), so this walks every entry and asserts none of the keeper-facing
@@ -174,7 +179,7 @@ func TestControllerActualReturnShapes(t *testing.T) {
 }
 
 func TestJSONReturnsRawBytes(t *testing.T) {
-	raw, err := everabi.JSON(everabi.ICREReceiverBase)
+	raw, err := everabi.JSON(everabi.IKeeperExecutorBase)
 	if err != nil {
 		t.Fatalf("JSON() error = %v", err)
 	}

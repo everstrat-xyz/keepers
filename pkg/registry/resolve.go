@@ -55,8 +55,8 @@ var (
 	AMM                    = Key{KeyAMM, "AMM", everabi.IAMM}
 	StrategyManager        = Key{KeyStrategyManager, "STRATEGY_MANAGER", everabi.IStrategyManager}
 	Oracle                 = Key{KeyOracle, "ORACLE", everabi.IOracle}
-	QueueKeeperExecutor    = Key{KeyQueueKeeperExecutor, "QUEUE_KEEPER_EXECUTOR", everabi.ICREQueueExecutor}
-	StrategyKeeperExecutor = Key{KeyStrategyKeeperExecutor, "STRATEGY_KEEPER_EXECUTOR", everabi.ICREStrategyExecutor}
+	QueueKeeperExecutor    = Key{KeyQueueKeeperExecutor, "QUEUE_KEEPER_EXECUTOR", everabi.IQueueKeeperExecutor}
+	StrategyKeeperExecutor = Key{KeyStrategyKeeperExecutor, "STRATEGY_KEEPER_EXECUTOR", everabi.IStrategyKeeperExecutor}
 	EVE                    = Key{KeyEVE, "EVE", ""}
 	Converter              = Key{KeyConverter, "CONVERTER", ""}
 	Whitelist              = Key{KeyWhitelist, "WHITELIST", ""}

@@ -25,9 +25,10 @@ func validSepoliaConfig() chains.Config {
 const validReceiver = "0x000000000000000000000000000000000000bEEF"
 
 func TestChainConstants(t *testing.T) {
-	// Selectors are the CCIP values CREReceiverBase compares the Envelope
-	// against; the forwarder is the only address the receiver accepts
-	// onReport from. Both are documented in README.md.
+	// Selectors are the CCIP chain ids the (now-retired) CRE envelope
+	// validated against; W4's config validation still requires the pair, and
+	// they remain the canonical identifiers for these chains. Documented in
+	// README.md.
 	if chains.Sepolia.Selector != 16015286601757825753 {
 		t.Errorf("Sepolia selector = %d", chains.Sepolia.Selector)
 	}
@@ -221,10 +222,8 @@ func TestParseAddressAcceptsUnchecksummedCase(t *testing.T) {
 func TestScaffoldConfigsAreShapedCorrectly(t *testing.T) {
 	root := filepath.Join("..", "..")
 	configs := []string{
-		"queue-keeper/config.staging.json",
-		"queue-keeper/config.production.json",
-		"strategy-keeper/config.staging.json",
-		"strategy-keeper/config.production.json",
+		"freeze-watch/config.staging.json",
+		"freeze-watch/config.production.json",
 	}
 
 	for _, rel := range configs {
@@ -253,7 +252,7 @@ func TestScaffoldConfigsAreShapedCorrectly(t *testing.T) {
 				t.Errorf("maxReportAgeSeconds = %d, want 1..%d", cfg.MaxReportAgeSeconds, chains.MaxReportAgeCeiling)
 			}
 			if !cfg.ShadowMode {
-				t.Error("shadowMode = false; it must stay true until the cutover issue enables writeReport")
+				t.Error("shadowMode = false; W4 must stay read-only")
 			}
 		})
 	}

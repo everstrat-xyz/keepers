@@ -7,10 +7,10 @@
 //
 // # No writes, structurally
 //
-// W4 is observability only. This package has no dependency on pkg/crewrite or
-// pkg/envelope, and there is no code path from an Alert to a report. That is
-// the guarantee, not a convention: a future edit that tried to actuate would
-// have to add the import, which is visible in review.
+// W4 is observability only. This package has no dependency on anything that
+// can build or send a transaction, and there is no code path from an Alert to
+// one. That is the guarantee, not a convention: a future edit that tried to
+// actuate would have to add write-capable code, which is visible in review.
 package freezewatch
 
 import (
@@ -134,27 +134,29 @@ type Observation struct {
 	Feeds      []OracleFeed
 	Strategies []StrategyHealth
 
-	// Keepers is per-receiver liveness.
+	// Keepers is per-executor liveness.
 	Keepers []KeeperHealth
 }
 
-// KeeperHealth describes one CRE receiver.
+// KeeperHealth describes one keeper executor.
 type KeeperHealth struct {
 	Name string
-	// Bound is false when neither expectedWorkflowId nor expectedAuthor is
-	// set, which makes the receiver inert — it rejects every report.
+	// Bound is false when the caller allowlist is empty — which makes the
+	// executor inert, since perform() reverts KeeperExecutorNoAllowedCallers —
+	// or, when a Gelato proxy is configured, when the proxy is missing from
+	// the allowlist.
 	Bound bool
-	// LastAcceptedAt is when the receiver last accepted a report. Zero means
+	// LastAcceptedAt is when the executor last performed upkeep. Zero means
 	// never, which is expected before cutover.
 	//
-	// CONTRACT-BLOCKED: no receiver view exposes this — `readKeepers` in
+	// CONTRACT-BLOCKED: no executor view exposes this — `readKeepers` in
 	// freeze-watch/reads.go cannot populate it, so KindKeeperStalled never
 	// fires in production today, and the unit tests (which set this field
-	// directly) mask that. Needs a `lastReportAcceptedAt()` accessor (or
-	// equivalent) on CREReceiverBase in everstrat-xyz/contracts; wire it up
-	// in readKeepers as part of that change.
+	// directly) mask that. Needs a `lastUpkeepPerformedAt()` accessor (or
+	// equivalent) on KeeperExecutorBase in everstrat-xyz/contracts; wire it
+	// up in readKeepers as part of that change.
 	LastAcceptedAt uint64
-	// UpkeepAvailable is whether the receiver's own view currently recommends
+	// UpkeepAvailable is whether the executor's own view currently recommends
 	// an action. A keeper is only "stalled" if there was work to do.
 	UpkeepAvailable bool
 	Paused          bool
@@ -248,14 +250,14 @@ func Evaluate(o Observation, t Thresholds) []Alert {
 				Kind:     KindReceiverUnbound,
 				Severity: SeverityWarning,
 				Subject:  k.Name,
-				Message:  "receiver has neither expectedWorkflowId nor expectedAuthor set, so it rejects every report",
+				Message:  "executor allowlist is empty or missing the configured Gelato proxy, so perform() reverts for every task",
 			})
 		case k.Paused:
 			alerts = append(alerts, Alert{
 				Kind:     KindProtocolPaused,
 				Severity: SeverityCritical,
 				Subject:  k.Name,
-				Message:  "receiver is paused",
+				Message:  "executor is paused",
 			})
 		case k.UpkeepAvailable && k.LastAcceptedAt > 0 && o.Now >= k.LastAcceptedAt:
 			if idle := o.Now - k.LastAcceptedAt; idle > t.KeeperStalledAfter {

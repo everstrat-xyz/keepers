@@ -36,6 +36,9 @@ go.work.sum
 binary.wasm*
 .cre/
 
+# Node (Gelato Web3 Functions)
+node_modules/
+
 # Scratch worktree used when refreshing vendored ABIs (see
 # contracts/evm/src/abi/SOURCE.md) — never commit it.
 .vendor-tmp/

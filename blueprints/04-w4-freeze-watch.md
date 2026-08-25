@@ -3,9 +3,9 @@
 Files: `freeze-watch/main.go`, `freeze-watch/reads.go`, `pkg/freezewatch/alerts.go`.
 
 W4 is the silent-stop detector: it watches freeze precursors and keeper health
-and posts an alert digest to a webhook. It **cannot write on-chain** — the
-package imports neither `pkg/crewrite` nor `pkg/envelope`, so actuation would
-require adding an import that is visible in review. NAV-guardian actuation is a
+and posts an alert digest to a webhook. It **cannot write on-chain** — nothing
+in its dependency graph can build or send a transaction, so actuation would
+require adding code that is visible in review. NAV-guardian actuation is a
 separate epic behind DAO sign-off (TECH_SPEC Phase 3).
 
 ## Tick flow
@@ -43,7 +43,7 @@ flowchart LR
     subgraph WARN["Severity: warning"]
         W1k["batch-escape-hatch<br/>within 12h of the hatch"]
         W2k["upkeep-backlog<br/>≥ 10 batches behind cursor"]
-        W3k["receiver-unbound<br/>no workflowId/author set —<br/>receiver rejects everything"]
+        W3k["executor-unbound<br/>allowlist empty, or a configured<br/>Gelato proxy missing from it —<br/>perform() reverts for every task"]
         W4k["strategy-unhealthy<br/>unhealthy and not paused"]
     end
 ```
@@ -68,9 +68,10 @@ flowchart LR
 
 A keeper is only considered stalled when **all three** hold:
 
-1. `Bound` — the receiver has `expectedWorkflowId`/`expectedAuthor` set (an
-   unbound receiver gets the `receiver-unbound` warning instead),
-2. `UpkeepAvailable` — the receiver's own view currently recommends an action
+1. `Bound` — the executor's caller allowlist is non-empty and, when
+   `gelatoProxyAddress` is configured, contains the proxy (an unbound executor
+   gets the `executor-unbound` warning instead),
+2. `UpkeepAvailable` — the executor's own view currently recommends an action
    (no work → no stall),
 3. `LastAcceptedAt` is older than `KeeperStalledAfter` (default 6h).
 

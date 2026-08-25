@@ -6,20 +6,21 @@ learn; the "why" matters more than the rule.
 
 ## What this repo is
 
-Go workflows for the Chainlink Runtime Environment (CRE) that drive EverStrat's
-keeper plane. They run as WASM (`wasip1`) on a decentralised oracle network,
-read protocol state on-chain, and deliver DON-signed reports to receiver
-contracts in [`everstrat-xyz/contracts`](https://github.com/everstrat-xyz/contracts).
+Automation for EverStrat's keeper plane, running on the Gelato Network:
 
-| Workflow | Role | Receiver |
-| --- | --- | --- |
-| `queue-keeper/` | W1 — exit-queue automation | `CREQueueExecutor` |
-| `strategy-keeper/` | W2 — strategy automation | `CREStrategyExecutor` |
-| `freeze-watch/` | W4 — observability, **no writes** | — |
+- **W1** (`web3-functions/queue-keeper/`) — a Gelato **TypeScript Web3
+  Function** driving `QueueKeeperExecutor`. It scans the exit queue deeper
+  than the gas-bounded on-chain view and submits `perform()` calldata.
+- **W2** — no code here at all. `StrategyKeeperExecutor` exposes its own
+  `checker()`, and Gelato calls it directly as a solidity resolver.
+- **W4** (`freeze-watch/`) — a CRE-era Go workflow, observability only, **no
+  writes**. Its Gelato migration is deferred.
 
 Governing principle, from `TECH_SPEC.md` §5:
 
 > **Workflows orchestrate. Contracts decide.**
+
+The executors live in [`everstrat-xyz/contracts`](https://github.com/everstrat-xyz/contracts).
 
 ---
 
@@ -28,160 +29,139 @@ Governing principle, from `TECH_SPEC.md` §5:
 These are not style preferences. Each one, violated, produces a keeper that is
 either silently broken or actively dangerous.
 
-### 1. A report must never carry an authoritative amount
+### 1. A payload must never carry an authoritative amount
 
 No ETH amount, NAV, or price. Params are claims and hints only.
 
-The executor holds `KEEPER_ROLE`. If an amount in a report were authoritative, a
-workflow bug would become a settlement bug. The contracts hold up their end —
-`CREStrategyExecutor._processReport` never reads params, and `CREQueueExecutor`
-re-derives affordability — and this repo holds up its end by making amounts
-inexpressible:
+The executors re-derive everything from live state — `QueueKeeperExecutor`
+re-validates affordability, `StrategyKeeperExecutor` never reads params — and
+this repo holds up its end by making amounts inexpressible:
 
-- `pkg/queue` params take only batch ids and an end index, all `uint64`.
-- `pkg/strategy`'s `Report.Build` takes an action and nothing else.
-- `queue.DecodeParams` enforces the **exact** wire length per action, because
-  all layouts are static and a smuggled amount can only appear as a trailing
-  word that Solidity's `abi.decode` would silently ignore.
+- W1 params are a batch id and an index range, nothing else
+  (`web3-functions/queue-keeper/src/params.ts`).
+- `decode()` enforces the **exact** wire length per action, because all
+  layouts are static and a smuggled amount can only appear as a trailing word
+  that Solidity's `abi.decode` would silently ignore.
 
-**Reviewing:** any new field in a params struct, any `*big.Int` reaching a
-report builder, any relaxation of the length check.
+**Reviewing:** any new field in `Params`, any amount reaching `encode()`, any
+relaxation of the length check.
 
-### 2. Chain reads are capped at 15 per execution
+### 2. The clock is the observed block's, never `Date.now()`
 
-`ChainRead.CallLimit = 15`, with a 5 kB response cap
-(`cre workflow limits export`). Exceeding it aborts the whole execution with
-`Public:User:LimitExceeded` — no partial result.
+Age comparisons (`minBatchAge`, `MAX_BATCH_PROCESSING_TIME`) use
+`block.timestamp` of the block the state was read at. The wall clock can sit
+ahead of the chain, and a batch's `createdAt` was recorded from
+`block.timestamp` — comparing the two compares different clocks, and would
+fail every tick.
 
-Reads therefore batch through Multicall3 (`pkg/evmread`), which is one chain
-read regardless of sub-call count, and every read plan takes from an explicit
-`evmread.Budget` before issuing.
+In W1 that means `state.now` comes from `provider.getBlock("latest")`, and
+nothing else.
 
-**Reviewing:** a `Call`/`Aggregate` inside a loop; a read added to a fixed
-preamble without adjusting `TestReadPlanFitsBudget`; a plan that does not
-degrade when the budget runs out. Degrading means truncating the scan and
-saying so — never aborting the tick.
+**Reviewing:** any `Date.now()` / `new Date()` reaching a decision input.
 
-See [`docs/READ_BUDGET.md`](docs/READ_BUDGET.md).
+### 3. W1 may scan deeper than the contract. W2 may not.
 
-### 3. The clock is the observed block's, never `runtime.Now()`
+This asymmetry is in the **contracts**, and it is the single easiest thing to
+get wrong:
 
-`CREReceiverBase` rejects `observedAt > block.timestamp` with **zero**
-tolerance. `runtime.Now()` is the DON's wall clock, which can sit ahead of the
-chain — so using it would fail *every* report, permanently.
+- `QueueKeeperExecutor._processReport` validates a `ProcessRequests` claim
+  **per batch, with no scan window**. So W1 scanning past the on-chain view's
+  25-batch window is a genuine win — the executor still accepts it.
+- `StrategyKeeperExecutor._processReport` re-derives every quantity with the
+  **same bounded helpers** the view uses. That is precisely why W2 has no
+  off-chain code: a truer off-chain shortfall would be rejected on arrival.
 
-The same applies to any age comparison against chain state: a batch's
-`createdAt` was recorded from `block.timestamp`, so comparing it to wall time
-compares two different clocks.
+`AdvanceCursor` is W1's exception: the executor advances the cursor with its
+*bounded* walk, so the claim is capped at what one execution can reach
+(`decide.ts` → `peekAdvancedCursor(s, MAX_BATCH_SCAN)`).
 
-Both come from `evmread.BlockTimestamp`.
+### 4. ethers v5 → bigint, through one coercion point
 
-**Reviewing:** any new `runtime.Now()` outside `Validate`'s delivery-time
-argument.
+The Gelato SDK pins ethers v5; `Contract` calls return `BigNumber` typed as
+`any`, while the decision engine works in native `bigint`. Mixing the two
+either throws or compares unequal without warning.
 
-### 4. Sequence comes from the receiver, every tick
+All conversion goes through the `w()` helper at the read boundary in
+`index.ts`. A `BigNumber` reaching `decide()` cannot happen silently.
 
-`lastSequence` is not state the workflow owns — a break-glass multisig report, a
-redeploy, or overlapping workflow versions all move it. A local counter leaves
-the keeper permanently behind the receiver with every report rejected.
+**Reviewing:** any read result assigned to a `State`/`Batch`/`Request` field
+without going through `w()`.
 
-Always `envelope.NextSequence(receiver.lastSequence())`, read this run.
+### 5. W4 cannot write
 
-### 5. W1 may scan deeper than the contract. W2 may not.
-
-This asymmetry is in the **contracts**, not the workflows, and it is the single
-easiest thing to get wrong here:
-
-- `CREQueueExecutor._processReport` validates a `ProcessRequests` claim **per
-  batch, with no scan window**. So W1 scanning past the on-chain view's 25-batch
-  window is a genuine win — the receiver still accepts it.
-- `CREStrategyExecutor._processReport` re-derives every quantity with the
-  **same bounded helpers** the view uses. So a W2 that computed a truer
-  shortfall would propose actions the receiver's own recomputation rejects, and
-  revert every time.
-
-`pkg/strategy` therefore mirrors `MAX_BATCH_SCAN` / `MAX_USERS_COST_SCAN`
-exactly, pinned by `TestScanCapsMatchTheContract`. The needs walk is
-`[cursor, currentBatchId)` — the current unpriced batch is not a liability
-(M-11) and is not fetched. Expired in-window batches skip the user-list phase.
-
-`AdvanceCursor` is W1's exception: the receiver advances with its *bounded*
-walk, so the claim is capped at what one report can reach.
-
-### 6. W4 cannot write
-
-`freeze-watch/` imports neither `pkg/crewrite` nor `pkg/envelope`. That is the
-guarantee — actuation would require adding an import a reviewer can see. NAV
+`freeze-watch/` has no code path from an Alert to a transaction. That is the
+guarantee — actuation would require adding code a reviewer can see. NAV
 guardian actuation is a separate epic behind DAO sign-off.
 
 ---
 
 ## Testing conventions
 
-### Golden values come from Solidity, never from Go
+### Golden values come from Solidity, never from TS
 
 A round-trip against our own encoder passes no matter how wrong the layout is.
-Fixtures are generated by Foundry and committed:
+The TS fixtures reuse the exact hex the retired Go suite generated with
+`cast abi-encode` and `chisel` (a real Solidity evaluator):
 
-- `scripts/gen-envelope-fixtures.sh` — `cast abi-encode`
-- `scripts/gen-solmath-fixtures.sh` — `chisel` (a real Solidity evaluator)
+- `src/params.test.ts` — ABI-encoded params bytes
+- `src/solmath.test.ts` — `convertAssets` / `isRelativelyLessThan` including
+  truncating division and boundary strictness
 
-**A trap worth knowing:** Solidity constant-folds literal expressions with
-*rational* arithmetic, so `chisel eval '(1 * 1) / 1e18'` either fails to compile
-or returns the exact value. Every operand must be wrapped in `uint256(...)` to
-get EVM integer truncation. The generator does this; hand-written fixtures have
-silently tested the wrong thing before.
+Do not "recompute" a fixture in TS to make it pass — that is testing the code
+against itself.
 
 ### Contract semantics are transcribed, not reimplemented
 
-`pkg/solmath` is a literal transcription of the contracts' `Math` library,
-including truncating division and the strict `<` in `isRelativelyLessThan`.
-Affordability walks the request prefix and **breaks** at the first request that
-overruns the balance — it does not skip it to fit cheaper ones behind.
+`src/solmath.ts` mirrors the contracts' `Math` library, including truncating
+division and the strict `<` in `isRelativelyLessThan`. The affordability walk
+**breaks** at the first request that overruns the balance — it does not skip an
+expensive request to fit cheaper ones behind it.
 
 "Close enough" produces a keeper that proposes work the contract refuses, which
 looks exactly like a broken keeper.
 
-### Enum ordinals and ABI shapes are pinned
+### Enum ordinals are pinned
 
-Solidity enums reorder silently. `unprocessedUsers` is overloaded, and
-go-ethereum renames the second occurrence to `unprocessedUsers0` — picking the
-wrong one fetches every user instead of a bounded prefix. Both are pinned by
-tests.
+`Action.None/PriceBatch/ProcessRequests/AdvanceCursor` = 0/1/2/3, matching
+`IQueueKeeperExecutor.QueueAction`. Solidity enums reorder silently; the TS
+enum must move with them or every payload is silently retargeted.
 
-### The fork harness is the only end-to-end check
+### Divergence classification is code, not judgment
 
-Unit tests cover decision logic. Only [`docs/LOCAL_FORK.md`](docs/LOCAL_FORK.md)
-exercises the EVM read path against a real deployment — it is what caught both
-the 15-read limit and the wall-clock bug. Run it before trusting a change to any
-`reads.go`.
+W1 cross-checks its decision against the on-chain view every tick and logs a
+class: `match`, `intended-improvement` (beyond the view's scan window),
+`truncated-scan`, or `bug`. Shadow-mode graduation was "zero unexplained
+divergences over 7 days" — "explained" is defined in `src/divergence.ts`, not
+argued per incident. A new source of benign disagreement needs a new class
+with a reason, not a shrug.
 
 ---
 
 ## Repo mechanics
 
-- **`./...` does not work.** The workflow mains are `//go:build wasip1`, so a
-  host toolchain excludes every file in them. Use `./pkg/... ./contracts/...`
-  for host packages and `GOOS=wasip1` for the workflows, as the Makefile does.
-- **`make check`** = vet + lint + test + wasip1 build. Run it before pushing.
-- **golangci-lint v2 is required** — v1 refuses to run when built with an older
-  Go than this module targets.
-- **Vendored ABIs are never hand-edited.** Refresh per
+- **`go test ./...` does not work** — freeze-watch's main is
+  `//go:build wasip1`, so a host toolchain excludes it. Use `./pkg/...
+  ./contracts/...` for host packages, as the Makefile does.
+- **`make check`** = Go fmt+vet+lint+test+build, plus the Web3 Function
+  typecheck and jest.
+- **`npm install --ignore-scripts`** locally — `deno-bin`'s postinstall fetches
+  a runtime from GitHub releases that is not needed for typecheck/jest.
+- **Vendored ABIs are never hand-edited.** Refresh from `forge build` output in
+  `everstrat-xyz/contracts` per
   [`contracts/evm/src/abi/SOURCE.md`](contracts/evm/src/abi/SOURCE.md) and
-  update the pinned commit in the same PR. `Pausable.json` and `Multicall3.json`
-  are hand-written exceptions, documented there.
-- **Addresses are not secrets.** They are public config in
-  `config.<target>.json`. `secrets.yaml` is for capabilities only (e.g. the W4
-  webhook URL).
-- **`shadowMode: true` stays on** until the Sepolia cutover
-  ([#6](https://github.com/everstrat-xyz/keepers/issues/6)).
+  update the pinned commit in the same PR. `Pausable.json` and
+  `Multicall3.json` are hand-written exceptions, documented there.
+- **Addresses are not secrets.** They are public config. Gelato task user-args
+  carry `registryAddress` and the executor address; nothing else.
+- **The Gelato dedicated proxy is assigned at task creation**, which is why
+  `KeeperExecutorBase` has a settable allowlist rather than an immutable
+  constructor arg. Executors deploy inert by design.
 
 ### CI
 
 A job that reports success while doing nothing is worse than no job. The
-simulate job did exactly that for months — gated on a secret it did not need —
-and hid both its own missing coverage and a CRE CLI install that had been
-unpacking the release tarball over the binary.
+simulate job once did exactly that for months — gated on a secret it did not
+need — and hid both missing coverage and a broken CLI install.
 
 So: gate on the secret actually required, and make skips **loud** (warning
 annotation plus run-summary note). Never let an absent secret look like a pass.
@@ -191,7 +171,7 @@ annotation plus run-summary note). Never let an absent secret look like a pass.
 ## Style
 
 - Comments explain **why**, not what. The what is in the code; the why is the
-  contract behaviour or CRE constraint that forced the shape.
+  contract behaviour or platform constraint that forced the shape.
 - Errors name the field and the consequence, not just the failure.
 - Mirror the surrounding code's density and idiom.
 - Prefer making a mistake inexpressible over documenting that it is forbidden.

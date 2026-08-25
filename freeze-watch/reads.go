@@ -303,14 +303,14 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 	}
 	targets := []target{
 		{"queue-keeper", "queueExecutorAddress", config.QueueExecutorAddress,
-			everabi.ICREQueueExecutor, "queueUpkeepStatus"},
+			everabi.IQueueKeeperExecutor, "queueUpkeepStatus"},
 		{"strategy-keeper", "strategyExecutorAddress", config.StrategyExecutorAddress,
-			everabi.ICREStrategyExecutor, "strategyUpkeepStatus"},
+			everabi.IStrategyKeeperExecutor, "strategyUpkeepStatus"},
 	}
 
 	for _, t := range targets {
-		// Same validation W1 and W2 apply to their own receiver address, so an
-		// address W4 reports as healthy is one they could actually deliver to.
+		// Same validation W1 and W2 apply to their own executor address, so an
+		// address W4 reports as healthy is one they could actually call.
 		addr, err := chains.ParseAddress(t.configField, t.addr)
 		if err != nil {
 			continue // not deployed yet, or a placeholder; nothing to watch
@@ -319,11 +319,23 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 			return
 		}
 
+		// The CRE-era workflow-binding views are gone. The Gelato-era
+		// equivalent of "a task is wired up" is the executor having at least
+		// one allowlisted automation caller — an empty allowlist means every
+		// perform() reverts KeeperExecutorNoAllowedCallers, which is exactly
+		// the "bound but broken" state W4 exists to catch. When the dedicated
+		// proxy address is configured, isExecutorCaller must also return true
+		// for it.
 		calls := []evmread.SubCall{
-			{To: addr, ABI: everabi.ICREReceiverBase, Method: "expectedWorkflowId"},
-			{To: addr, ABI: everabi.ICREReceiverBase, Method: "expectedAuthor"},
+			{To: addr, ABI: everabi.IKeeperExecutorBase, Method: "executorCallerCount"},
 			{To: addr, ABI: everabi.Pausable, Method: "paused"},
 			{To: addr, ABI: t.abi, Method: t.view},
+		}
+		if proxy, err := chains.ParseAddress("gelatoProxyAddress", config.GelatoProxyAddress); err == nil {
+			calls = append(calls, evmread.SubCall{
+				To: addr, ABI: everabi.IKeeperExecutorBase, Method: "isExecutorCaller",
+				Args: []interface{}{proxy},
+			})
 		}
 		results, err := c.Aggregate(calls, true).Await()
 		if err != nil {
@@ -332,23 +344,25 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 
 		k := freezewatch.KeeperHealth{Name: t.name}
 		if results[0].Success && len(results[0].Values) == 1 {
-			if id, ok := results[0].Values[0].([32]byte); ok && id != ([32]byte{}) {
-				k.Bound = true
+			if count, err := evmread.Uint64(results[0].Values[0], "executorCallerCount"); err == nil {
+				k.Bound = count > 0
 			}
 		}
-		if !k.Bound && results[1].Success && len(results[1].Values) == 1 {
-			if author, err := evmread.Address(results[1].Values[0], "expectedAuthor"); err == nil {
-				k.Bound = author != (common.Address{})
+		if len(calls) == 4 && results[3].Success && len(results[3].Values) == 1 {
+			if allowed, err := results[3].Bool("isExecutorCaller"); err == nil {
+				// A configured proxy missing from the allowlist means the task
+				// will fire and revert — bound, but broken.
+				k.Bound = k.Bound && allowed
 			}
 		}
-		if results[2].Success {
-			paused, err := results[2].Bool("receiver.paused")
+		if results[1].Success {
+			paused, err := results[1].Bool("executor.paused")
 			if err == nil {
 				k.Paused = paused
 			}
 		}
-		if results[3].Success && len(results[3].Values) > 0 {
-			if action, ok := results[3].Values[0].(uint8); ok {
+		if results[2].Success && len(results[2].Values) > 0 {
+			if action, ok := results[2].Values[0].(uint8); ok {
 				k.UpkeepAvailable = action != 0
 			}
 		}

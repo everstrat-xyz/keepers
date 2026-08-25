@@ -3,34 +3,33 @@
 These JSON files are the `abi` field of `forge build` artifacts from
 [`everstrat-xyz/contracts`](https://github.com/everstrat-xyz/contracts), copied
 verbatim (keys sorted, so diffs stay readable). **Do not hand-edit them** — a
-local edit silently desynchronises W1/W2 from the deployed receivers.
+local edit silently desynchronises the keepers from the deployed executors.
 
 | Field | Value |
 | --- | --- |
 | Source repo | `everstrat-xyz/contracts` |
-| Commit | `9f29cde9d18c47a966b1b41e59b0ebad52524931` |
-| Branch at vendoring time | `main` (includes PRs [#39](https://github.com/everstrat-xyz/contracts/pull/39)–[#43](https://github.com/everstrat-xyz/contracts/pull/43): keeper liability, Controller actuals, deposit-capacity gating) |
-| Vendored on | 2026-08-18 |
+| Commit | `<update on refresh>` — Gelato-era executor rename (`IKeeperExecutorBase`, `IQueueKeeperExecutor`, `IStrategyKeeperExecutor`) |
+| Vendored on | 2026-08-25 |
 
-> The key change in [#43](https://github.com/everstrat-xyz/contracts/pull/43)
-> for these ABIs: `IController`'s deposit/withdraw/harvest functions now return
-> the StrategyManager actual, and the full-batch `processRequests(batchId)` is a
-> no-op on an empty batch. Refresh again before the Sepolia cutover
-> ([issue #6](https://github.com/everstrat-xyz/keepers/issues/6)).
+> The Gelato migration renamed the CRE receivers and replaced the
+> forwarder/identity surface (`onReport`, `expectedWorkflowId`, `expectedAuthor`)
+> with a caller allowlist (`allowExecutorCaller`, `isExecutorCaller`,
+> `executorCallerCount`) and a `checker()`/`perform()` Gelato surface. Refresh
+> again before cutover if contracts move.
 
 ## Contents
 
 | File | Why the keepers need it |
 | --- | --- |
-| `ICREReceiverBase.json` | `Envelope` shape, identity setters, `lastSequence`, `MAX_REPORT_AGE`, `CHAIN_SELECTOR` |
-| `ICREQueueExecutor.json` | W1 target: `queueUpkeepStatus`, `nextLiveBatchIdToProcess`, `affordableRequests`, `minBatchAge`, `maxUsersPerUpkeep` |
-| `ICREStrategyExecutor.json` | W2 target: `strategyUpkeepStatus`, `pendingRedemptionNeedsETH`, thresholds |
+| `IKeeperExecutorBase.json` | Caller-allowlist surface: `allowExecutorCaller`, `isExecutorCaller`, `executorCallerCount`, `pause`/`unpause` |
+| `IQueueKeeperExecutor.json` | W1 target: `checker`, `perform`, `queueUpkeepStatus`, `nextLiveBatchIdToProcess`, `affordableRequests`, `minBatchAge`, `maxUsersPerUpkeep` |
+| `IStrategyKeeperExecutor.json` | W2 target: `checker`, `perform`, `strategyUpkeepStatus`, `pendingRedemptionNeedsETH`, thresholds |
 | `IRegistry.json` | `getContractByKey` — address resolution for every protocol contract |
 | `IController.json` | Controller balance / pause state cross-checks |
 | `IExitQueue.json` | Off-chain full-queue scan: `currentBatchId`, `batchInfo`, `unprocessedUsers*`, `requestInfo`, `MAX_BATCH_PROCESSING_TIME` |
 | `IAMM.json` | Pause state and exit-liquidity reads |
 | `IStrategyManager.json` | Strategy list, deposit cooldown, performance-fee reads |
-| `IStrategy.json` | Per-strategy health, pause, max deposit/withdrawal — what W2's priority order turns on |
+| `IStrategy.json` | Per-strategy health, pause, max deposit/withdrawal |
 | `IOracle.json` | Feed freshness — the Registry address book binds it to the `ORACLE` key |
 
 ## Refreshing
@@ -39,12 +38,12 @@ local edit silently desynchronises W1/W2 from the deployed receivers.
 CONTRACTS=../contracts   # path to a clean everstrat-xyz/contracts checkout
 (cd "$CONTRACTS" && forge build)
 
-for f in ICREReceiverBase ICREQueueExecutor ICREStrategyExecutor \
+for f in IKeeperExecutorBase IQueueKeeperExecutor IStrategyKeeperExecutor \
          IRegistry IController IExitQueue IAMM IStrategyManager IStrategy IOracle; do
   jq -S '.abi' "$CONTRACTS/out/$f.sol/$f.json" > "contracts/evm/src/abi/$f.json"
 done
 
-go test ./...   # envelope/params fixtures must still pass
+go test ./pkg/... ./contracts/...   # surface pins must still pass
 ```
 
 Then update the commit hash in the table above in the same PR.
@@ -57,15 +56,6 @@ build and are not covered by the refresh above:
 - `Pausable.json` — OpenZeppelin's `paused()`. The EverStrat interfaces inherit
   Pausable without re-declaring it, so it appears in no forge artifact, yet both
   `*UpkeepStatus` views gate on it.
-- `Multicall3.json` — the canonical aggregator's `aggregate3`. CRE caps a
-  workflow at 15 contract reads per execution, so batched reads are the only way
-  to scan anything; see [`docs/READ_BUDGET.md`](../../../../docs/READ_BUDGET.md).
-
-## Typed bindings
-
-`cre generate-bindings evm` (which writes generated Go clients into
-`contracts/evm/src/`) is deliberately **not** run yet: it pulls the
-`cre-sdk-go/capabilities/blockchain/evm` module, which only earns its place once
-W1/W2 actually issue on-chain reads ([#3](https://github.com/everstrat-xyz/keepers/issues/3) /
-[#4](https://github.com/everstrat-xyz/keepers/issues/4)). Until then `abi.Get`
-gives packing/unpacking against the same JSON the generator would consume.
+- `Multicall3.json` — the canonical aggregator's `aggregate3`. W4 still runs on
+  CRE, which caps a workflow at 15 contract reads per execution, so batched
+  reads are the only way to scan anything there.
