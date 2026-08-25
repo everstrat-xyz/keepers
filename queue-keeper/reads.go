@@ -21,7 +21,8 @@ import (
 //	1  balance    Controller ETH
 //	1  multicall  queueUpkeepStatus cross-check
 //	N  multicall  batchInfo + unprocessedUsersCount per batch
-//	M  multicall  unprocessedUsers per processable batch
+//	M  multicall  unprocessedUsers for non-skippable candidates
+//	               (expired/empty skipped; unaffordable heads continue)
 //	K  multicall  requestInfo per unprocessed request
 //
 // Everything after the first two rounds is budgeted: the scan takes what is
@@ -262,8 +263,9 @@ func readQueueState(
 	}
 
 	chunks := evmread.ChunkSubCalls(infoCalls, perResult)
-	// Leave at least two reads for the user and request phases, or the scan
-	// finds batches it cannot evaluate.
+	// Leave at least two reads for the first candidate's user-list and
+	// request-detail rounds. Further unaffordable heads, if any, take from
+	// whatever remains after that.
 	affordable := b.Remaining() - 2
 	if affordable < 0 {
 		affordable = 0
@@ -302,86 +304,118 @@ func readQueueState(
 		state.ScanTruncatedAt = reached
 	}
 
-	// Phase 2: user lists for batches the receiver could act on. An unpriced
-	// batch is never processable, so its users are irrelevant.
+	// Phase 2/3: user lists + requestInfo, in the same order Decide walks.
+	// Empty and expired batches are skippable (no user read). Unpriced batches
+	// need PriceBatch, not users. A priced in-window head whose prefix is 0
+	// (first request overruns the Controller) is not skippable — the view
+	// continues — so we load the next candidate rather than stopping at [:1].
 	type pending struct {
 		id    uint64
 		limit uint64
 	}
 	var candidates []pending
 	for _, id := range ids {
-		b, ok := state.Batches[id]
-		if !ok || !b.CanBeProcessed || b.UnprocessedCount == 0 {
+		if !state.NeedsUserScan(id) {
 			continue
 		}
+		b := state.Batches[id]
 		limit := b.UnprocessedCount
 		if limit > rc.MaxUsersPerUpkeep {
 			limit = rc.MaxUsersPerUpkeep
 		}
 		candidates = append(candidates, pending{id: id, limit: limit})
 	}
-	if len(candidates) == 0 {
-		return state, nil
-	}
 
-	// Only the oldest candidate can be chosen — Decide takes the first batch
-	// with affordable work — so reading users for the rest would spend budget
-	// on batches that cannot be picked this tick.
-	candidates = candidates[:1]
-
-	userCalls := make([]evmread.SubCall, 0, len(candidates))
 	for _, cand := range candidates {
-		userCalls = append(userCalls, p.exitQueue.Sub("unprocessedUsers",
-			new(big.Int).SetUint64(cand.id), new(big.Int), new(big.Int).SetUint64(cand.limit)))
-	}
-	if !b.Take(1) {
-		state.ScanTruncatedAt = first
-		return state, nil
-	}
-	userResults, err := c.Aggregate(userCalls, false).Await()
-	if err != nil {
-		return queue.State{}, fmt.Errorf("reading unprocessed users: %w", err)
+		complete, ok, err := loadCandidateRequests(c, p, &state, cand.id, cand.limit, b, perResult)
+		if err != nil {
+			return queue.State{}, err
+		}
+		if !ok {
+			if state.ScanTruncatedAt == 0 {
+				state.ScanTruncatedAt = cand.id
+			}
+			break
+		}
+		affordable, err := state.AffordableRequests(cand.id)
+		if err != nil {
+			return queue.State{}, err
+		}
+		if affordable > 0 {
+			// Decide will pick this batch. Later ids cannot be chosen this tick.
+			break
+		}
+		if !complete {
+			// Could not fully evaluate; do not skip past it (same rule as an
+			// unreadable batch: not skippable).
+			if state.ScanTruncatedAt == 0 {
+				state.ScanTruncatedAt = cand.id
+			}
+			break
+		}
 	}
 
-	// Phase 3: per-request detail for those users.
-	var requestCalls []evmread.SubCall
+	return state, nil
+}
+
+// loadCandidateRequests fetches unprocessedUsers + requestInfo for one batch.
+// ok is false when the budget ran out before any user list. complete is false
+// when the user list landed but requestInfo was truncated.
+func loadCandidateRequests(
+	c *evmread.Caller,
+	p preamble,
+	state *queue.State,
+	batchID, limit uint64,
+	b *evmread.Budget,
+	perResult int,
+) (complete, ok bool, err error) {
+	if !b.Take(1) {
+		return false, false, nil
+	}
+	userResults, err := c.Aggregate([]evmread.SubCall{
+		p.exitQueue.Sub("unprocessedUsers",
+			new(big.Int).SetUint64(batchID), new(big.Int), new(big.Int).SetUint64(limit)),
+	}, false).Await()
+	if err != nil {
+		return false, false, fmt.Errorf("reading unprocessed users: %w", err)
+	}
+	if len(userResults[0].Values) != 1 {
+		return false, false, fmt.Errorf("unprocessedUsers returned %d values, want 1", len(userResults[0].Values))
+	}
+	users, err := evmread.Addresses(userResults[0].Values[0], "unprocessedUsers")
+	if err != nil {
+		return false, false, err
+	}
+	if len(users) == 0 {
+		return true, true, nil
+	}
+
 	type owner struct {
 		batchID uint64
 		user    common.Address
 	}
+	var requestCalls []evmread.SubCall
 	var owners []owner
-	for i, cand := range candidates {
-		if len(userResults[i].Values) != 1 {
-			return queue.State{}, fmt.Errorf("unprocessedUsers returned %d values, want 1", len(userResults[i].Values))
-		}
-		users, err := evmread.Addresses(userResults[i].Values[0], "unprocessedUsers")
-		if err != nil {
-			return queue.State{}, err
-		}
-		for _, u := range users {
-			owners = append(owners, owner{batchID: cand.id, user: u})
-			requestCalls = append(requestCalls,
-				p.exitQueue.Sub("requestInfo", new(big.Int).SetUint64(cand.id), u))
-		}
-	}
-	if len(requestCalls) == 0 {
-		return state, nil
+	for _, u := range users {
+		owners = append(owners, owner{batchID: batchID, user: u})
+		requestCalls = append(requestCalls,
+			p.exitQueue.Sub("requestInfo", new(big.Int).SetUint64(batchID), u))
 	}
 
 	done := 0
 	for _, chunk := range evmread.ChunkSubCalls(requestCalls, perResult) {
 		if !b.Take(1) {
-			break
+			return false, true, nil
 		}
 		results, err := c.Aggregate(chunk, false).Await()
 		if err != nil {
-			return queue.State{}, fmt.Errorf("reading request info: %w", err)
+			return false, false, fmt.Errorf("reading request info: %w", err)
 		}
 		for i, r := range results {
 			o := owners[done+i]
 			req, err := queue.DecodeRequestInfo(o.user, r.Values)
 			if err != nil {
-				return queue.State{}, err
+				return false, false, err
 			}
 			batch := state.Batches[o.batchID]
 			batch.Requests = append(batch.Requests, req)
@@ -389,9 +423,5 @@ func readQueueState(
 		}
 		done += len(results)
 	}
-	if done < len(requestCalls) && state.ScanTruncatedAt == 0 {
-		state.ScanTruncatedAt = candidates[0].id
-	}
-
-	return state, nil
+	return done == len(requestCalls), true, nil
 }

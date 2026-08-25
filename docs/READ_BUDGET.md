@@ -37,21 +37,49 @@ That converts the binding constraint from *call count* to *response size*:
 | Reads | Purpose |
 | --- | --- |
 | 1 | block timestamp (the clock — see [envelope.md](envelope.md)) |
-| 1 | multicall: Registry lookups + receiver config + receiver `paused` |
+| 1 | multicall: Registry×3 + receiver config×6 + receiver `paused` |
 | 1 | multicall: `currentBatchId`, `MAX_BATCH_PROCESSING_TIME`, 3× `paused` |
 | 1 | Controller ETH balance |
-| 1 | `queueUpkeepStatus` cross-check |
 | ~10 | multicalls: batch scan, user lists, request detail |
+| 1 | `queueUpkeepStatus` cross-check (reserved) |
 
 That reaches roughly **64 batches per tick** against the on-chain view's 25 —
 pinned by `TestReadPlanFitsBudget` in `pkg/evmread`, which fails if a change to
-the plan erodes the advantage.
+the plan erodes the advantage. The current (unpriced) batch **is** in W1's
+Phase 1 window: `PriceBatch` needs its age and unprocessed count.
+
+Users are loaded for **non-skippable** priced batches, oldest first, until one
+has an affordable prefix. Expired and empty heads skip the user read; an
+over-budget in-window head is not skippable, so the next candidate is loaded
+rather than stalling.
+
+## W2's plan
+
+| Reads | Purpose |
+| --- | --- |
+| 1 | block timestamp |
+| 1 | multicall: Registry×5 + receiver thresholds + receiver `paused` |
+| 1 | multicall: `currentBatchId` (exclusive bound), `MAX_BATCH_PROCESSING_TIME`, queue cursor, AMM `freeBalance`, fee bps, strategy list, 2× `paused` |
+| 1 | Controller ETH balance |
+| 1+ | per-strategy ×7 (`paused`, `isHealthy`, `maxDeposit`, `maxWithdrawal`, cooldown, `depositWeight`, pending fee), chunked |
+| M | `[cursor, currentBatchId)` headers (≤25); `unprocessedUsers` + `requestInfo` only if `NeedsCostScan` |
+| 1 | `strategyUpkeepStatus` cross-check |
+
+W2's scan **width** is the contract cap (`MaxBatchScan=25`,
+`MaxUsersCostScan=50`), pinned by `TestScanCapsMatchTheContract` — not leftover
+budget. The current unpriced batch is not fetched (M-11: cancellable equity,
+not a liability). Expired / empty / unpriced in-window batches still get Phase 1
+headers so `pricedAt` is known, then Phase 2 skips their users.
+
+There is no `AMM.eveBasePriceInETH` read. Costing the current batch at the live
+base price would propose `WithdrawShortfall` the receiver recomputes as none.
 
 ## Degrading, not failing
 
 `evmread.Budget` is taken from before each round rather than discovered at the
 limit. When the scan runs out it stops and marks the state truncated
-(`queue.State.ScanTruncated`), which the tick logs as `scanTruncated=true`.
+(`queue.State.ScanTruncated` / `strategy.State.ScanTruncated`), which the tick
+logs as `scanTruncated=true`.
 
 A truncated scan can only cause the workflow to propose **less** work than
 exists, never wrong work — `Decide` walks batches oldest-first, so a short scan
@@ -69,13 +97,12 @@ is why it is logged rather than silently tolerated.
    sized for the worst-case element count — three full 50-user lists in one
    read exceed 5 kB and abort the tick (`TestUnprocessedUsersListsMustBeChunked`).
 2. **Take budget before issuing**, and handle refusal by degrading.
-3. **Only read what can change the decision.** W1 reads the user list for the
-   oldest processable batch only, because `Decide` cannot choose any other batch
-   in the same tick. W2 reads `depositWeight` per strategy because
-   `_depositCapacityAvailable` gates on it, and no longer reads
-   `AMM.eveBasePriceInETH` at all — the current batch stopped being a liability
-   in contracts PR #43, so nothing in W2's model consumes a live price.
-4. **Update `TestReadPlanFitsBudget`** when the fixed plan changes, so the
-   remaining scan depth stays visible.
+3. **Only read what can change the decision.** W1 reads users for non-skippable
+   priced batches in Decide order, stopping at the first affordable prefix.
+   W2 reads `depositWeight` per strategy because `_depositCapacityAvailable`
+   gates on it; queue user lists only for priced, in-window, unexpired batches.
+4. **Update `TestReadPlanFitsBudget`** when W1's fixed plan changes, so the
+   remaining scan depth stays visible. W2 cap changes go in
+   `TestScanCapsMatchTheContract`.
 5. **Verify on the fork** ([LOCAL_FORK.md](LOCAL_FORK.md)). Every tick logs
    `readsRemaining`; the limit is only enforced at runtime.

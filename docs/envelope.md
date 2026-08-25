@@ -118,6 +118,10 @@ whose remaining budget the DON cannot plausibly beat.
 | `CREQueueExecutor` | 0 `None`, 1 `PriceBatch`, 2 `ProcessRequests`, 3 `AdvanceCursor` |
 | `CREStrategyExecutor` | 0 `None`, 1 `Rebalance`, 2 `WithdrawShortfall`, 3 `DepositExcess`, 4 `HarvestPerformanceFees`, 5 `Sync`, 6 `ProvideExitLiquidity` |
 
+Those are **enum ordinals**, not decision order. `strategyUpkeepStatus` /
+`Decide` evaluate `ProvideExitLiquidity` *before* `DepositExcess` (see
+`Priority` in `pkg/strategy/strategy.go`).
+
 `None` is the enum's zero value and is what the `*UpkeepStatus` views return
 when there is nothing to do. It is **never** a valid report action —
 `_processReport` reverts `KeeperExecutorUnknownAction`. Ordinals are pinned by

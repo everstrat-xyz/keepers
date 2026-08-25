@@ -147,6 +147,40 @@ func TestIsBatchSkippable(t *testing.T) {
 	})
 }
 
+func TestNeedsUserScan(t *testing.T) {
+	s := stateWith(batch(1, req(1, 1)))
+
+	if !s.NeedsUserScan(1) {
+		t.Error("NeedsUserScan(priced in-window) = false")
+	}
+	if s.NeedsUserScan(99) {
+		t.Error("NeedsUserScan(missing) = true")
+	}
+
+	expired := batch(1, req(1, 1))
+	expired.PricedAt = nowTS - threeDS - 1
+	s = stateWith(expired)
+	if s.NeedsUserScan(1) {
+		t.Error("NeedsUserScan(expired) = true; the view skips it without reading users")
+	}
+
+	empty := batch(1, req(1, 1))
+	empty.UnprocessedCount = 0
+	empty.Requests = nil
+	s = stateWith(empty)
+	if s.NeedsUserScan(1) {
+		t.Error("NeedsUserScan(empty) = true")
+	}
+
+	unpriced := batch(1, req(1, 1))
+	unpriced.CanBeProcessed = false
+	unpriced.PricedAt = 0
+	s = stateWith(unpriced)
+	if s.NeedsUserScan(1) {
+		t.Error("NeedsUserScan(unpriced) = true; PriceBatch does not need a user list")
+	}
+}
+
 func TestAffordableRequests(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -485,6 +519,38 @@ func TestDecidePriorityOrder(t *testing.T) {
 		}
 		if d.Action != queue.ActionAdvanceCursor || d.BatchID != 2 {
 			t.Errorf("got %s batch %d, want AdvanceCursor to 2", d.Action, d.BatchID)
+		}
+	})
+
+	t.Run("processes a later batch when the head is unaffordable", func(t *testing.T) {
+		// Mirrors queueUpkeepStatus: an in-window batch whose first request
+		// overruns is not skippable, but affordable == 0, so the walk continues.
+		head := batch(1, req(1, 100))
+		later := batch(2, req(2, 1))
+		s := stateWith(head, later)
+		s.ControllerBalance = eth(1)
+
+		d, err := queue.Decide(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Action != queue.ActionProcessRequests || d.BatchID != 2 || d.EndIndex != 1 {
+			t.Errorf("got %s batch %d end %d, want ProcessRequests batch 2 end 1", d.Action, d.BatchID, d.EndIndex)
+		}
+	})
+
+	t.Run("processes a later batch when the head is expired", func(t *testing.T) {
+		head := batch(1, req(1, 1))
+		head.PricedAt = nowTS - threeDS - 1
+		later := batch(2, req(2, 1))
+		s := stateWith(head, later)
+
+		d, err := queue.Decide(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Action != queue.ActionProcessRequests || d.BatchID != 2 {
+			t.Errorf("got %s batch %d, want ProcessRequests batch 2", d.Action, d.BatchID)
 		}
 	})
 

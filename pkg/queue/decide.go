@@ -146,6 +146,22 @@ func (s State) IsBatchSkippable(id uint64) bool {
 	return s.Now > b.PricedAt+s.MaxBatchProcessingTime
 }
 
+// NeedsUserScan reports whether this batch is one Decide might ProcessRequests,
+// which cannot be known without requestInfo.
+//
+// Empty and expired batches are skippable — the view walks past them without
+// reading users. Unpriced batches need PriceBatch, not a user list. A priced,
+// in-window batch with leftover requests still needs users even if its first
+// request later turns out to overrun the Controller balance: Decide (and
+// queueUpkeepStatus) continue to the next such batch rather than stalling.
+func (s State) NeedsUserScan(id uint64) bool {
+	b, ok := s.Batches[id]
+	if !ok || !b.CanBeProcessed || b.UnprocessedCount == 0 {
+		return false
+	}
+	return !s.IsBatchSkippable(id)
+}
+
 // AffordableRequests mirrors CREQueueExecutor._affordableRequests: how many
 // requests, taken as a prefix from index 0, the Controller's balance covers.
 //
