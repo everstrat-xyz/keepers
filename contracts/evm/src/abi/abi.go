@@ -8,8 +8,9 @@
 // Two groups live here:
 //
 //   - Executors (IKeeperExecutorBase, IQueueKeeperExecutor,
-//     IStrategyKeeperExecutor) — the Gelato-era contracts the keepers drive,
-//     plus their gas-bounded `*UpkeepStatus` cross-check views.
+//     IStrategyKeeperExecutor) — the keeper-plane contracts the Mimic
+//     functions drive, plus their gas-bounded `*UpkeepStatus` cross-check
+//     views.
 //   - Reads (IRegistry, IController, IExitQueue, IAMM, IStrategyManager) —
 //     the off-chain view surface workflows scan before proposing an action.
 package abi

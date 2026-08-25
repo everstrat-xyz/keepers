@@ -1,13 +1,13 @@
 # Blueprints — how the keeper plane works
 
 Mermaid diagrams explaining this repo. The W1/W2 diagrams were CRE-era and
-were removed with the Go workflows they described; W1 now lives as a Gelato
-TypeScript Web3 Function (`web3-functions/queue-keeper/`) and W2 needs no
-task-side code at all — `StrategyKeeperExecutor.checker()` is the resolver.
+were removed with the Go workflows they described; W1 now lives as a Mimic
+function (`mimic-functions/queue-keeper/`) and W2 is a thin relay —
+`StrategyKeeperExecutor.checker()` stays authoritative.
 
 | Diagram | What it shows |
 | --- | --- |
-| `01-system-overview.md` | The components, Gelato, and the contracts, end to end |
+| `01-system-overview.md` | The components, Mimic, and the contracts, end to end |
 | `04-w4-freeze-watch.md` | W4's tick: what it watches, alert kinds, webhook |
 
 Two invariants that explain half the design, worth keeping in mind while

@@ -79,9 +79,10 @@ jobs:
             standard this repo is held to.
 
             These tasks drive contracts that hold `KEEPER_ROLE` over user funds,
-            via Gelato tasks that the repo cannot fully test end-to-end before
-            deploy. A bug here does not crash a server; it either moves money
-            wrongly or silently stops moving it at all. Review accordingly.
+            via Mimic functions that the repo cannot fully test end-to-end
+            before deploy. A bug here does not crash a server; it either moves
+            money wrongly or silently stops moving it at all. Review
+            accordingly.
 
             ## Check these repo-specific invariants first
 
@@ -91,34 +92,37 @@ jobs:
                authoritative ETH amount, NAV, or price. Flag any new field in
                W1's `Params`, any amount reaching `encode()`, or any relaxation
                of `decode()`'s exact-length check in
-               `web3-functions/queue-keeper/src/params.ts`.
+               `mimic-functions/queue-keeper/src/params.ts`.
 
-            2. **The clock must be the observed block's, not `Date.now()`.**
+            2. **The clock must be the observed block's, not the wall clock.**
                Batch ages are compared against `createdAt` values recorded from
                `block.timestamp`, so wall-clock time skews every `minBatchAge`
-               check. Flag any `Date.now()` / `new Date()` reaching a decision
-               input.
+               check — and the Mimic runner hands the function a millisecond
+               timestamp that must be converted to seconds once, at the read
+               boundary. Flag any `Date.now()` / unconverted timestamp
+               reaching a decision input.
 
-            3. **ethers v5 `BigNumber` must not leak into the decision engine.**
-               The Gelato SDK pins ethers v5, whose `Contract` calls return
-               `BigNumber` typed as `any`; the engine works in native `bigint`.
-               All coercion goes through the `w()` helper in `index.ts`. Flag
-               any read result assigned into `State`/`Batch`/`Request`
-               without it.
+            3. **AssemblyScript aborts are tick-killers.** `Map.get` on a
+               missing key aborts the whole module (probe `has()` first), and
+               `BigInt.pow` overflows silently past ~2^170. Flag raw `.get()`
+               on the batch map and exponents near 256.
 
             4. **W1 may scan deeper than the contract; W2 may not.** W1's
                executor validates per batch with no window, so a deeper scan is
                a genuine win. W2's executor re-derives with the same bounded
-               helpers — which is why W2 has no off-chain code. Flag any change
-               that widens W2's caps or narrows W1's scan.
+               helpers — which is why W2's function only relays `checker()`
+               verbatim. Flag any change that widens W2's reach, narrows W1's
+               scan, or makes W2 interpret the payload it forwards.
 
             5. **W4 (`freeze-watch/`) must not be able to write.** It is the
                last CRE-era workflow here; flag any write-capable code added to
                its dependency graph.
 
-            6. **Golden test values must come from Solidity** (`cast`,
-               `chisel), never from TypeScript or Go. A round-trip against our
-               own encoder proves nothing. Flag hand-computed fixtures.
+            6. **Golden test values must come from an independent encoder.**
+               The specs build expected calldata with ethers' `Interface` over
+               the executor ABI, never with the function's own `encode`. A
+               round-trip against our own encoder proves nothing. Flag
+               hand-computed fixtures.
 
             7. **Vendored ABIs are never hand-edited.** Flag a changed
                `contracts/evm/src/abi/*.json` without a matching commit-hash
@@ -128,7 +132,7 @@ jobs:
 
             Correctness bugs, error handling that loses information, test
             coverage for the branches that matter, and anything that would
-            behave differently under Gelato's execution model (or CRE's, for
+            behave differently under Mimic's execution model (or CRE's, for
             freeze-watch) than it appears to.
 
             Prefer a small number of specific, actionable findings over a broad

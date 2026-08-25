@@ -1,9 +1,10 @@
 # W4 (freeze-watch) remains a CRE-era Go workflow pending its own migration
-# (deferred). W1/W2 now run as Gelato tasks and live in web3-functions/.
+# (deferred). W1/W2 now run as Mimic functions and live in mimic-functions/.
 HOST_PKGS := ./pkg/... ./contracts/...
 WASM_PKGS := ./freeze-watch/
+FUNCTIONS := queue-keeper strategy-keeper
 
-.PHONY: tidy fmt fmt-check vet lint test build check w3f w3f-test w3f-check
+.PHONY: tidy fmt fmt-check vet lint test build check functions functions-test
 
 tidy:
 	go mod tidy
@@ -37,12 +38,18 @@ test:
 build:
 	GOOS=wasip1 GOARCH=wasm go build -o /tmp/freeze-watch.wasm ./freeze-watch/
 
-# W1 queue-keeper — Gelato TypeScript Web3 Function.
-w3f:
-	cd web3-functions/queue-keeper && npm run typecheck && npm test
+# W1/W2 — Mimic functions. `npm test` compiles the WASM and runs the
+# raw-mock oracle specs against it.
+functions:
+	@for f in $(FUNCTIONS); do \
+		echo "== mimic-functions/$$f =="; \
+		(cd mimic-functions/$$f && npm test) || exit 1; \
+	done
 
-w3f-test:
-	cd web3-functions/queue-keeper && npm test
+functions-test:
+	@for f in $(FUNCTIONS); do \
+		(cd mimic-functions/$$f && npm test) || exit 1; \
+	done
 
 # What CI runs.
-check: fmt-check vet lint test build w3f
+check: fmt-check vet lint test build functions

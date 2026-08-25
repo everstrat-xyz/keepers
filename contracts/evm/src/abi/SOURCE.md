@@ -8,14 +8,14 @@ local edit silently desynchronises the keepers from the deployed executors.
 | Field | Value |
 | --- | --- |
 | Source repo | `everstrat-xyz/contracts` |
-| Commit | `<update on refresh>` — Gelato-era executor rename (`IKeeperExecutorBase`, `IQueueKeeperExecutor`, `IStrategyKeeperExecutor`) |
+| Commit | `<update on refresh>` — vendor-neutral executor rename (`IKeeperExecutorBase`, `IQueueKeeperExecutor`, `IStrategyKeeperExecutor`) |
 | Vendored on | 2026-08-25 |
 
-> The Gelato migration renamed the CRE receivers and replaced the
-> forwarder/identity surface (`onReport`, `expectedWorkflowId`, `expectedAuthor`)
-> with a caller allowlist (`allowExecutorCaller`, `isExecutorCaller`,
-> `executorCallerCount`) and a `checker()`/`perform()` Gelato surface. Refresh
-> again before cutover if contracts move.
+> The Mimic migration (via the Gelato interlude) renamed the CRE receivers and
+> replaced the forwarder/identity surface (`onReport`, `expectedWorkflowId`,
+> `expectedAuthor`) with a caller allowlist (`allowExecutorCaller`,
+> `isExecutorCaller`, `executorCallerCount`) and a `checker()`/`perform()`
+> vendor-neutral surface. Refresh again before cutover if contracts move.
 
 ## Contents
 

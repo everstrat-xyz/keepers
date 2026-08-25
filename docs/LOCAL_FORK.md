@@ -5,12 +5,12 @@ EverStrat protocol on an anvil fork of Sepolia. Unit tests cover the decision
 logic, but only this catches the runtime constraints.
 
 It earned its keep twice during the CRE era, and both lessons survive the
-Gelato migration:
+Mimic migration:
 
 - **CRE's `ChainRead.CallLimit` is 15 reads per execution.** The first read
   layer needed ~16 calls before touching a single batch and aborted with
   `Public:User:LimitExceeded`. This is why W4's reads batch through Multicall3
-  — and why W1, now free of any read cap on Gelato, still bounds its scan by
+  — and why W1, now free of any read cap on Mimic, still bounds its scan by
   config so a long stall cannot produce an unbounded tick.
 - **The wall clock is the wrong clock.** Batch ages compared against
   wall-clock time disagreed with the contract, which records `createdAt` from
@@ -21,7 +21,7 @@ Gelato migration:
 
 - Foundry (`anvil`, `forge`, `cast`)
 - A checkout of [`everstrat-xyz/contracts`](https://github.com/everstrat-xyz/contracts)
-  with the Gelato-era executors
+  with the keeper-plane executors
 - CRE CLI (W4 only, until its own migration lands)
 
 ## 1. Fork Sepolia
@@ -95,7 +95,7 @@ DON nodes would observe different blocks and consensus would fail.
 
 ## 4. What to look for
 
-W4's keeper-health read now checks the Gelato-era allowlist surface instead of
+W4.s keeper-health read now checks the caller-allowlist surface instead of
 the CRE binding views:
 
 ```bash
@@ -106,7 +106,7 @@ cast call $EXE 'executorCallerCount()(uint256)' --rpc-url http://127.0.0.1:8545
 ```
 
 To simulate a bound executor, impersonate an ADMIN_ROLE holder and allowlist a
-caller; W4 should then report the keeper bound. With `gelatoProxyAddress` set
+caller; W4 should then report the keeper bound. With `mimicProxyAddress` set
 in the config to an address *not* on the allowlist, W4 must report
 bound-but-broken — that is the state its `KeeperHealth.Bound` check exists to
 catch.

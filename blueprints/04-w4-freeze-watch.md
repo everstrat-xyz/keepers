@@ -43,7 +43,7 @@ flowchart LR
     subgraph WARN["Severity: warning"]
         W1k["batch-escape-hatch<br/>within 12h of the hatch"]
         W2k["upkeep-backlog<br/>≥ 10 batches behind cursor"]
-        W3k["executor-unbound<br/>allowlist empty, or a configured<br/>Gelato proxy missing from it —<br/>perform() reverts for every task"]
+        W3k["executor-unbound<br/>allowlist empty, or a configured<br/>Mimic proxy missing from it —<br/>perform() reverts for every task"]
         W4k["strategy-unhealthy<br/>unhealthy and not paused"]
     end
 ```
@@ -69,7 +69,7 @@ flowchart LR
 A keeper is only considered stalled when **all three** hold:
 
 1. `Bound` — the executor's caller allowlist is non-empty and, when
-   `gelatoProxyAddress` is configured, contains the proxy (an unbound executor
+   `mimicProxyAddress` is configured, contains the proxy (an unbound executor
    gets the `executor-unbound` warning instead),
 2. `UpkeepAvailable` — the executor's own view currently recommends an action
    (no work → no stall),

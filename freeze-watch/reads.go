@@ -319,7 +319,7 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 			return
 		}
 
-		// The CRE-era workflow-binding views are gone. The Gelato-era
+		// The CRE-era workflow-binding views are gone. The Mimic-era
 		// equivalent of "a task is wired up" is the executor having at least
 		// one allowlisted automation caller — an empty allowlist means every
 		// perform() reverts KeeperExecutorNoAllowedCallers, which is exactly
@@ -331,7 +331,7 @@ func readKeepers(c *evmread.Caller, config *Config, obs *freezewatch.Observation
 			{To: addr, ABI: everabi.Pausable, Method: "paused"},
 			{To: addr, ABI: t.abi, Method: t.view},
 		}
-		if proxy, err := chains.ParseAddress("gelatoProxyAddress", config.GelatoProxyAddress); err == nil {
+		if proxy, err := chains.ParseAddress("mimicProxyAddress", config.MimicProxyAddress); err == nil {
 			calls = append(calls, evmread.SubCall{
 				To: addr, ABI: everabi.IKeeperExecutorBase, Method: "isExecutorCaller",
 				Args: []interface{}{proxy},

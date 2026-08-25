@@ -36,8 +36,11 @@ go.work.sum
 binary.wasm*
 .cre/
 
-# Node (Gelato Web3 Functions)
+# Node (Mimic functions)
 node_modules/
+
+# Mimic function build artifacts (also *.wasm above)
+mimic-functions/*/build/
 
 # Scratch worktree used when refreshing vendored ABIs (see
 # contracts/evm/src/abi/SOURCE.md) — never commit it.

@@ -119,8 +119,8 @@ func TestUpkeepStatusReturnShapes(t *testing.T) {
 	}
 }
 
-// TestCheckerReturnShape pins the Gelato resolver surface: canExec plus the
-// execPayload the W3F must reproduce byte-for-byte for the same action.
+// TestCheckerReturnShape pins the checker surface: canExec plus the
+// execPayload the W2 relay function forwards byte-for-byte.
 func TestCheckerReturnShape(t *testing.T) {
 	for _, name := range []everabi.Name{everabi.IQueueKeeperExecutor, everabi.IStrategyKeeperExecutor} {
 		m, err := everabi.Method(name, "checker")

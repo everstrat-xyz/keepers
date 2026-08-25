@@ -143,7 +143,7 @@ type KeeperHealth struct {
 	Name string
 	// Bound is false when the caller allowlist is empty — which makes the
 	// executor inert, since perform() reverts KeeperExecutorNoAllowedCallers —
-	// or, when a Gelato proxy is configured, when the proxy is missing from
+	// or, when a Mimic proxy is configured, when the proxy is missing from
 	// the allowlist.
 	Bound bool
 	// LastAcceptedAt is when the executor last performed upkeep. Zero means
@@ -250,7 +250,7 @@ func Evaluate(o Observation, t Thresholds) []Alert {
 				Kind:     KindReceiverUnbound,
 				Severity: SeverityWarning,
 				Subject:  k.Name,
-				Message:  "executor allowlist is empty or missing the configured Gelato proxy, so perform() reverts for every task",
+				Message:  "executor allowlist is empty or missing the configured Mimic proxy, so perform() reverts for every task",
 			})
 		case k.Paused:
 			alerts = append(alerts, Alert{

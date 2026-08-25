@@ -19,7 +19,7 @@ on:
       contracts_ref:
         description: "everstrat-xyz/contracts ref to deploy"
         required: false
-        default: "feat/gelato-keeper-executors"
+        default: "feat/mimic-keeper-executors"
   schedule:
     # 06:00 UTC daily.
     - cron: "0 6 * * *"
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: everstrat-xyz/contracts
-          ref: ${{ inputs.contracts_ref || 'feat/gelato-keeper-executors' }}
+          ref: ${{ inputs.contracts_ref || 'feat/mimic-keeper-executors' }}
           submodules: recursive
           path: contracts
 
@@ -154,7 +154,7 @@ jobs:
           set -euo pipefail
           fail=0
           # W4 still cross-checks both executor status views; their ABI names
-          # follow the Gelato-era contracts.
+          # follow the vendor-neutral keeper contracts.
           for f in IKeeperExecutorBase IQueueKeeperExecutor IStrategyKeeperExecutor \
                    IRegistry IController IExitQueue IAMM IStrategyManager IStrategy IOracle; do
             jq -S '.abi' "../contracts/out/$f.sol/$f.json" > "/tmp/$f.json"

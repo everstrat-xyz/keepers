@@ -29,10 +29,11 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      # Only freeze-watch (W4) remains a Go CRE workflow; W1/W2 are Gelato tasks
-      # and live under web3-functions/. Its main is //go:build wasip1, so
-      # `./...` on a linux toolchain excludes it — host packages are addressed
-      # explicitly and the workflow gets its own wasip1 step.
+      # Only freeze-watch (W4) remains a Go CRE workflow; W1/W2 are Mimic
+      # functions and live under mimic-functions/. Its main is
+      # //go:build wasip1, so `./...` on a linux toolchain excludes it — host
+      # packages are addressed explicitly and the workflow gets its own
+      # wasip1 step.
       - name: go vet (host packages)
         run: go vet ./pkg/... ./contracts/...
 
@@ -99,13 +100,18 @@ jobs:
           version: v2.12.2
           args: --timeout=5m ./freeze-watch/...
 
-  # W1 queue-keeper — Gelato TypeScript Web3 Function. Typecheck + jest.
-  w3f:
-    name: web3-functions / queue-keeper
+  # W1/W2 — Mimic functions. `npm test` compiles the WASM and runs the
+  # raw-mock oracle specs against it.
+  functions:
+    name: mimic-functions
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        function: [queue-keeper, strategy-keeper]
     defaults:
       run:
-        working-directory: web3-functions/queue-keeper
+        working-directory: mimic-functions/${{ matrix.function }}
     steps:
       - uses: actions/checkout@v4
 
@@ -113,12 +119,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: web3-functions/queue-keeper/package-lock.json
+          cache-dependency-path: mimic-functions/${{ matrix.function }}/package-lock.json
 
-      # deno-bin's postinstall fetches a runtime binary from github releases;
-      # it is not needed for typecheck/jest and fails in restricted networks.
-      - run: npm install --ignore-scripts
-      - run: npm run typecheck
+      - run: npm install
+      - run: npm run lint
       - run: npm test
 
   # W4 freeze-watch still simulates through CRE until its own migration lands
@@ -127,7 +131,7 @@ jobs:
   simulate:
     name: cre workflow simulate (freeze-watch)
     runs-on: ubuntu-latest
-    needs: [go, w3f]
+    needs: [go, functions]
     steps:
       - uses: actions/checkout@v4
 

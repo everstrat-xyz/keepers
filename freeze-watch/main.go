@@ -44,11 +44,11 @@ type Config struct {
 	QueueExecutorAddress    string `json:"queueExecutorAddress"`
 	StrategyExecutorAddress string `json:"strategyExecutorAddress"`
 
-	// GelatoProxyAddress is the dedicated msg.sender Gelato uses for tasks on
-	// both executors. Optional: when set, isExecutorCaller(proxy) must return
-	// true or the keeper is reported bound-but-broken; when empty, only a
-	// non-zero allowlist count is checked.
-	GelatoProxyAddress string `json:"gelatoProxyAddress"`
+	// MimicProxyAddress is the smart-account signer Mimic uses for function
+	// calls on both executors. Optional: when set, isExecutorCaller(proxy)
+	// must return true or the keeper is reported bound-but-broken; when empty,
+	// only a non-zero allowlist count is checked.
+	MimicProxyAddress string `json:"mimicProxyAddress"`
 
 	// Thresholds override freezewatch.DefaultThresholds when non-zero.
 	OracleStaleAfterSeconds      uint64 `json:"oracleStaleAfterSeconds"`
