@@ -135,7 +135,30 @@ truncated-scan, no-work) plus a `divergence cross-check` block asserting the
 `match` / `intended-improvement` / `bug` classification against a mocked
 `queueUpkeepStatus`.
 
-### 2.3 Deploy the function and create the task
+### 2.3 Then dry-run it against the real deployment
+
+The specs mock the oracle, keyed by the same query hash the function computes —
+so they cannot catch a query the oracle rejects or a return the generated
+wrapper decodes wrongly. `try-function` closes that gap: same compiled WASM,
+live oracle, real addresses, and it settles nothing.
+
+```bash
+cp scripts/env.template scripts/.env   # fill in the deployed addresses
+npm run build
+npm run try-function
+```
+
+It prints the decision line and the cross-check verdict. **Do not create a
+trigger while that says `divergence=bug`** — the off-chain model disagrees with
+`queueUpkeepStatus()` in a way the scan window does not explain, and binding a
+signer then just makes it expensive.
+
+This is also the honest way to run shadow mode. Creating a live trigger without
+allowlisting the signer does *not* observe quietly: every tick submits an intent
+that reverts `KeeperExecutorUnauthorizedCaller`, which costs fees and looks
+exactly like a broken keeper.
+
+### 2.4 Deploy the function and create the task
 
 ```bash
 cd mimic-functions/queue-keeper
@@ -146,7 +169,7 @@ Then create the task in the Protocol App with a time-based trigger
 (every 1–5 minutes) and the inputs above, with `smartAccount` filled from the
 task's assigned signer.
 
-### 2.4 Bind it (ADMIN_ROLE)
+### 2.5 Bind it (ADMIN_ROLE)
 
 ```solidity
 QueueKeeperExecutor.allowExecutorCaller(<mimic-signer>);
@@ -154,7 +177,7 @@ QueueKeeperExecutor.allowExecutorCaller(<mimic-signer>);
 
 Verify: `isExecutorCaller(<mimic-signer>) == true`.
 
-### 2.5 Verify a full tick
+### 2.6 Verify a full tick
 
 The function logs `W1 queue-keeper: action=… batch=… end=… divergence=…`
 every run:
@@ -174,11 +197,21 @@ investigating.
 
 ## 3. Shadow-mode graduation (optional but recommended)
 
-Before trusting W1 with live settlement, run it without allowlisting the
-signer (or with the task in simulate mode) for a window — the CRE-era rule of
-thumb was 7 days with **zero unexplained divergences**. The divergence classes
-above are exactly what "explained" means; anything outside them blocks
-graduation.
+Before trusting W1 with live settlement, run `npm run try-function` (§2.3) on a
+schedule for a window — the CRE-era rule of thumb was 7 days with **zero
+unexplained divergences**. The divergence classes above are exactly what
+"explained" means; anything outside them blocks graduation.
+
+Use the dry run, not an unbound live trigger: an unallowlisted trigger reverts
+`KeeperExecutorUnauthorizedCaller` every tick, which costs fees and is
+indistinguishable from a broken keeper. `try-function` reads the same state
+through the same compiled WASM and settles nothing.
+
+Note what shadow mode still will not tell you, because no intent is ever
+settled: fee behaviour under `maxFee`, and how often a claim goes stale between
+decide and settle (which surfaces as `KeeperExecutorNoUpkeepNeeded`). Both need
+a live trigger to measure, and both should be watched in the first days after
+binding.
 
 ---
 
@@ -204,6 +237,7 @@ that was never re-bound is silent.
 | Task misbehaving | Pause the task in the Mimic app — `perform()` stops being called; nothing on-chain to revert |
 | Executor misbehaving | `pause()` on the executor (ADMIN or SECURITY role) — every action path reverts `EnforcedPause` |
 | Rotate the Mimic signer | `removeExecutorCaller(old)`, `allowExecutorCaller(new)` — recreating the task assigns a new signer |
+| Trigger expired | Mimic requires an `endDate` on every trigger (`scripts/inputs.ts`, `TRIGGER_END_DATE`). When it passes the keeper simply stops, with **no on-chain signal** — recreate the trigger and re-bind its new signer |
 
 The executors never hold funds (W1 credits land in `amm.claimableBalances`,
 pull-over-push), so pausing loses nothing but time.
@@ -214,7 +248,7 @@ pull-over-push), so pausing loses nothing but time.
 
 | Selector | Thrown when | Seen by |
 | --- | --- | --- |
-| `KeeperExecutorNoAllowedCallers` | allowlist is empty — executor still inert | first `perform()` after deploy, before step 1.4/2.4 |
+| `KeeperExecutorNoAllowedCallers` | allowlist is empty — executor still inert | first `perform()` after deploy, before step 1.4/2.5 |
 | `KeeperExecutorUnauthorizedCaller` | signer not allowlisted | a rotated/recreated task that was never re-bound |
 | `KeeperExecutorNoUpkeepNeeded` | claim re-validated against live state and rejected | a stale payload, or two tasks racing |
 | `EnforcedPause` | executor paused | deliberate ops pause |

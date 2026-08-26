@@ -1,43 +1,40 @@
-import { Client, CronTriggerConfig, EthersSigner } from '@mimicprotocol/sdk'
-import { config } from 'dotenv'
+/**
+ * Create the W2 cron trigger from `scripts/.env`.
+ *
+ * Requires SMART_ACCOUNT_ADDRESS: unlike the dry-run scripts, this is the call
+ * that binds a real signer, and that same address is what ADMIN must pass to
+ * `StrategyKeeperExecutor.allowExecutorCaller()` before `perform()` stops
+ * reverting `KeeperExecutorNoAllowedCallers`.
+ */
+import { Client, EthersSigner } from '@mimicprotocol/sdk'
 
-// Fill in after `yarn mimic deploy` prints the function CID.
-const FUNCTION_CID = 'YOUR_FUNCTION_CID_HERE'
-
-// Every key here is required by manifest.yaml — a missing one fails manifest
-// validation at trigger creation, not at run time.
-const inputs = {
-  chainId: Number(process.env.CHAIN_ID),
-  executor: process.env.STRATEGY_EXECUTOR_ADDRESS!,
-  smartAccount: process.env.SMART_ACCOUNT_ADDRESS!,
-  maxFee: process.env.MAX_FEE ?? '1',
-}
+import { cronConfig, endDateNotice, inputs, required } from './inputs.js'
 
 async function main(): Promise<void> {
-  config({ path: './scripts/.env' })
+  const functionInputs = inputs(true)
+  const functionCid = required('FUNCTION_CID')
 
   const client = new Client({
-    signer: EthersSigner.fromPrivateKey(process.env.PRIVATE_KEY!),
+    signer: EthersSigner.fromPrivateKey(required('PRIVATE_KEY')),
   })
 
-  const manifest = await client.functions.getManifest(FUNCTION_CID)
+  const manifest = await client.functions.getManifest(functionCid)
 
   await client.triggers.signAndCreate({
-    functionCid: FUNCTION_CID,
+    functionCid,
     manifest: manifest,
-    input: inputs,
+    input: functionInputs,
     version: '1.0.0',
-    description: `EverStrat strategy keeper (W2) — chain ${inputs.chainId}`,
-    config: {
-      type: 'cron',
-      schedule: process.env.CRON_SCHEDULE ?? '*/5 * * * *',
-      delta: 0,
-    } as CronTriggerConfig,
+    description: `EverStrat strategy keeper (W2) — chain ${functionInputs.chainId}`,
+    config: cronConfig(),
     executionFeeLimit: '0',
     minValidations: 1,
   })
 
   console.log('Successfully created trigger')
+  console.log(endDateNotice())
+  console.log('Next: read the assigned smart account from the task page, then ADMIN calls')
+  console.log('StrategyKeeperExecutor.allowExecutorCaller(<smart account>) — until then perform() reverts.')
 }
 
 main().catch((error) => {

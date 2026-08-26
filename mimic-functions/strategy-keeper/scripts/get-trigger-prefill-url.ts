@@ -1,36 +1,31 @@
-import { Chains, getTriggerPrefillUrl, TriggerType } from '@mimicprotocol/sdk'
+/**
+ * Print a Mimic Protocol App URL with the W2 trigger form pre-filled.
+ *
+ * Useful when the trigger is created by hand in the app (the runbook's default)
+ * rather than by `create-trigger.ts`: the inputs come from the same
+ * `scripts/.env`, so the form cannot disagree with the manifest.
+ *
+ * `smartAccount` is left as the zero address on purpose — it is assigned when
+ * the trigger is created. Bind the real one afterwards with
+ * `StrategyKeeperExecutor.allowExecutorCaller()`, per docs/MIMIC_CUTOVER.md §1.4.
+ */
+import { getTriggerPrefillUrl } from '@mimicprotocol/sdk'
 
-// TODO: Replace with your deployed function's CID
-const FUNCTION_CID = 'YOUR_FUNCTION_CID_HERE'
-
-// TODO: Customize inputs to match your function's input structure
-const inputs = {
-  chainId: Chains.Optimism,
-  token: '0x0b2c639c533813f4aa9d7837caf62653d097ff85', // USDC on Optimism
-  amount: '1',
-  recipient: '0x...',
-  maxFee: '0.1',
-}
-
-// TODO: Customize the trigger configuration
-const config = {
-  type: TriggerType.Cron,
-  schedule: '0 2 * * *', // every day at 2am
-  delta: '2h',
-  endDate: Date.now() + 7 * 24 * 60 * 60 * 1000, // one week from now
-}
+import { cronConfig, endDateNotice, inputs, required } from './inputs.js'
 
 async function main(): Promise<void> {
-  // TODO: Replace with your parameters
+  const functionInputs = inputs()
+
   const prefillUrl = getTriggerPrefillUrl({
-    functionCid: FUNCTION_CID,
-    input: inputs,
-    config,
-    description: 'Example trigger description',
-    version: '1.0.1',
+    functionCid: required('FUNCTION_CID'),
+    input: functionInputs,
+    config: cronConfig(),
+    description: `EverStrat strategy keeper (W2) — chain ${functionInputs.chainId}`,
+    version: '1.0.0',
   })
 
   console.log(`Trigger prefill URL: ${prefillUrl}`)
+  console.log(endDateNotice())
 }
 
 main().catch((error) => {

@@ -11,6 +11,7 @@
     "compile": "mimic compile",
     "test": "mimic test",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p scripts/tsconfig.json",
     "trigger": "tsx scripts/create-trigger.ts",
     "prefill-url": "tsx scripts/get-trigger-prefill-url.ts",
     "try-function": "tsx scripts/try-function.ts"
