@@ -5,9 +5,11 @@
  * rather than by `create-trigger.ts`: the inputs come from the same
  * `scripts/.env`, so the form cannot disagree with the manifest.
  *
- * `smartAccount` is left as the zero address on purpose — it is assigned when
- * the trigger is created. Bind the real one afterwards with
- * `StrategyKeeperExecutor.allowExecutorCaller()`, per docs/MIMIC_CUTOVER.md §1.4.
+ * `smartAccount` is left as the zero address on purpose: this URL is a form
+ * prefill, not a live trigger. Paste the real Mimic smart account (this chain)
+ * into the App *before* signing. Then bind that same address with
+ * `StrategyKeeperExecutor.allowExecutorCaller()`. See docs/MIMIC_CUTOVER.md
+ * (Smart account wiring). Never submit a live trigger with `0x0`.
  */
 import { getTriggerPrefillUrl } from '@mimicprotocol/sdk'
 

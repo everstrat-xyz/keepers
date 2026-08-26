@@ -23,9 +23,8 @@ as a build error.
 | File | Why the function needs it |
 | --- | --- |
 | `QueueKeeperExecutor.json` | The W1 target: `perform`, `queueUpkeepStatus`, `nextBatchIdToProcess`, `minBatchAge`, `maxUsersPerUpkeep`, `paused` |
-| `IExitQueue.json` | The off-chain full-queue scan: `currentBatchId`, `batchInfo`, `unprocessedUsers*`, `requestInfo`, `MAX_BATCH_PROCESSING_TIME` |
-| `IController.json` | Controller pause state (the balance comes from `environment.getNativeTokenBalance`) |
-| `Pausable.json` | See below |
+| `IExitQueue.json` | The off-chain queue scan: `currentBatchId`, `batchInfo`, `unprocessedUsers*`, `requestInfo`, `MAX_BATCH_PROCESSING_TIME` |
+| `Pausable.json` | Pause fan-out on the executor, Controller, ExitQueue and AMM |
 
 `mimic-functions/strategy-keeper/abis/` (W2):
 
@@ -51,12 +50,12 @@ jq -S '.abi' "$CONTRACTS/out/QueueKeeperExecutor.sol/QueueKeeperExecutor.json" \
   > mimic-functions/queue-keeper/abis/QueueKeeperExecutor.json
 jq -S '.abi' "$CONTRACTS/out/IExitQueue.sol/IExitQueue.json" \
   > mimic-functions/queue-keeper/abis/IExitQueue.json
-jq -S '.abi' "$CONTRACTS/out/IController.sol/IController.json" \
-  > mimic-functions/queue-keeper/abis/IController.json
 jq -S '.abi' "$CONTRACTS/out/StrategyKeeperExecutor.sol/StrategyKeeperExecutor.json" \
   > mimic-functions/strategy-keeper/abis/StrategyKeeperExecutor.json
 
-make functions   # regenerates src/types/ and re-runs both spec suites
+(cd mimic-functions/queue-keeper && npx mimic codegen)
+(cd mimic-functions/strategy-keeper && npx mimic codegen)
+make test   # `make functions` is an alias for this; it does not codegen
 ```
 
 Then update the commit hash in the table above in the same PR. The specs build
@@ -70,3 +69,4 @@ chain.
 the refresh above: it is OpenZeppelin's `paused()`. The EverStrat interfaces
 inherit `Pausable` without re-declaring it, so it appears in no forge artifact,
 yet W1's pause fan-out reads it on the Controller, the ExitQueue and the AMM.
+Controller ETH balance is `environment.getNativeTokenBalance`, not an ABI.

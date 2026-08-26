@@ -39,13 +39,24 @@ export class UpkeepStatus {
 /** Classification labels, as plain strings so they serialize into logs. */
 export const DivMatch: string = 'match'
 /**
- * The run found work the gas-bounded view structurally could not see, or
- * claimed a valid shorter prefix. Expected — and the reason W1 exists.
+ * Two explained mismatches, neither of which is the default W1-only path:
+ *
+ * - A `ProcessRequests` batch past the view's reach (~cursor+50). The
+ *   executor accepts it (no window). Needs another `KEEPER_ROLE` pricing
+ *   while this cursor is frozen.
+ * - A shorter affordable prefix than the view reported. The executor
+ *   accepts any prefix. W1 uses the same walk as `_affordableRequests`
+ *   (`maxUsersPerUpkeep`, default 20); `maxRequestsPerBatch` defaults to
+ *   50. The spec mocks a larger on-chain `count`. Ops would only see it
+ *   if `maxRequestsPerBatch < maxUsersPerUpkeep` or the oracle Controller
+ *   balance is below the view's.
  */
 export const DivIntendedImprovement: string = 'intended-improvement'
 /**
- * The scan cap stopped the queue scan short, so a missing ProcessRequests
- * (or a skipped PriceBatch) is the run refusing to guess, not a logic error.
+ * `maxBatches` stopped the header walk short of `currentBatchId`. Default
+ * 250: needs `current - cursor ≥ 250`. The spec forces it with
+ * `maxBatches: 2`. A missing ProcessRequests or skipped PriceBatch is the
+ * run refusing to guess, not a logic error.
  */
 export const DivTruncatedScan: string = 'truncated-scan'
 /**
@@ -92,7 +103,9 @@ export function classify(decision: Decision, onChain: UpkeepStatus, s: State): D
       return new Divergence(DivMatch, decision, oc, 'same batch and same affordable prefix')
     }
     if (decision.endIndex < oc.count) {
-      // The executor accepts any prefix, so a shorter claim is safe.
+      // Executor accepts any prefix. W1 does not choose this against a
+      // correct view (same walk, looser maxRequestsPerBatch). The spec
+      // mocks a larger on-chain count.
       return new Divergence(
         DivIntendedImprovement,
         decision,
@@ -117,7 +130,8 @@ export function classify(decision: Decision, onChain: UpkeepStatus, s: State): D
   }
 
   if (decision.action == ActionProcessRequests && decision.batchId >= windowEnd) {
-    // The genuine full-scan win: this batch is past where the view stops.
+    // Past the view (~cursor+50). Accepted by _execute. Not the W1-only
+    // path: needs another pricer while this cursor is frozen.
     return new Divergence(
       DivIntendedImprovement,
       decision,
@@ -128,7 +142,7 @@ export function classify(decision: Decision, onChain: UpkeepStatus, s: State): D
         boundedCursor.toString() +
         ' + ' +
         MAX_BATCH_SCAN.toString() +
-        ') — found by the off-chain full scan'
+        ') — found by the off-chain walk'
     )
   }
 

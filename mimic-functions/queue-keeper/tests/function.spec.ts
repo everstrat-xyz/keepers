@@ -307,9 +307,8 @@ describe('Queue keeper (W1)', () => {
       unprocessedCountMock(id, '0'),
     ]
 
-    // cursor 0, current 30, maxBatches 250 — but the input caps at 250 so no
-    // truncation here; instead drive truncation via many dead batches with a
-    // tiny maxBatches.
+    // Default maxBatches 250 does not truncate here (cursor 1, current 5).
+    // Force it with a tiny cap so the header walk stops before current.
     const truncatedInputs = { ...inputs, maxBatches: 2 }
     const mocks: RawMock[] = [
       ...pausedReads(false, false, false),
@@ -416,6 +415,8 @@ describe('Queue keeper (W1)', () => {
     })
 
     it('reports intended-improvement when it claims a shorter prefix than the view', async () => {
+      // W1's walk covers one request; the mocked view reports count=2.
+      // Executor accepts any prefix. Not a default-path mismatch.
       const logs = await runAgainstView(2, '1', '2')
       expect(logs).to.include('divergence=intended-improvement')
     })

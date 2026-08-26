@@ -9,7 +9,7 @@ W1 and W2 now run as Mimic functions, and they are all this repo holds.
 
 | Component | Role | On-chain target | Model |
 | --- | --- | --- | --- |
-| `mimic-functions/queue-keeper/` | W1 — exit-queue automation | `QueueKeeperExecutor` | Mimic **Solidity Function** (deep scan off-chain) |
+| `mimic-functions/queue-keeper/` | W1 — exit-queue automation | `QueueKeeperExecutor` | Mimic function (off-chain decide; same 25-cap as the view) |
 | `mimic-functions/strategy-keeper/` | W2 — strategy automation | `StrategyKeeperExecutor` | Mimic function relaying the contract's own `checker()` |
 
 **W4 (freeze-watch)** — the read-only freeze-precursor and keeper-health
@@ -22,21 +22,38 @@ monitoring stack replaces it rather than in the keeper plane.
 
 ## Why the split
 
-W1's whole value is scanning **deeper than the gas-bounded on-chain view**:
-`QueueKeeperExecutor.queueUpkeepStatus()` stops after `MAX_BATCH_SCAN` (25)
-batches, while the function walks cursor→current with no such cap, then
-claims a batch the view could not reach. `perform()` re-validates per batch
-with no window applied, so the claim is accepted.
+`MAX_BATCH_SCAN` is the same 25 as `ExitQueue.MAX_LIVE_PRICED_BATCHES`.
+`priceBatch` will not create a 26th live priced batch. The view peeks up to
+25 skippable ids then scans 25 more, so it already sees a live batch at about
+`cursor+26`. `_execute(ProcessRequests)` still has no window — a deeper claim
+would be accepted — but with W1 as the only performer that depth does not
+show up:
 
-W2's decisions are all bounded re-derivations — there is no depth to gain — so
-the contract's own `checker()` stays authoritative and the function only
+- Every `perform` (including `PriceBatch`) runs `_advanceBatchCursor` (+25
+  skippable). W1 cannot grow a 25-long dead prefix and leave it sitting.
+- If W1 is down, nothing prices, so `currentBatchId` does not grow. The
+  window you already had (≤25 live + unpriced current) just expires in place.
+- A live batch the view cannot see needs another `KEEPER_ROLE` to keep
+  pricing while this cursor is frozen, and the first live id past ~`cursor+50`.
+- `maxBatches` default 250: a truncated scan needs `current - cursor ≥ 250`.
+  The spec forces it with `maxBatches: 2`.
+- Shorter `ProcessRequests` prefixes: W1 uses the same affordability walk as
+  the view (`maxUsersPerUpkeep`, default 20). `maxRequestsPerBatch` defaults
+  to 50 (looser). The `intended-improvement` shorter-prefix class is for a
+  view that reports a larger count; the spec mocks that. Ops would only see
+  it if `maxRequestsPerBatch < maxUsersPerUpkeep` or the oracle balance is
+  below the view's `address(controller).balance`.
+
+W2's decisions are all bounded re-derivations — a "truer" off-chain number
+would revert — so `checker()` stays authoritative and the function only
 relays its `execPayload` verbatim.
 
 Both executors authenticate the same way: Mimic calls `perform()` from a
-dedicated smart-account signer, which must be in the executor's
-`allowExecutorCaller` allowlist. An empty allowlist means `perform()` always
-reverts (`KeeperExecutorNoAllowedCallers`) — the executors deploy inert and
-only act once a task is created and its signer bound.
+smart account that must be in the executor's `allowExecutorCaller` allowlist
+(the same address as the function input `smartAccount`). An empty allowlist
+means `perform()` always reverts (`KeeperExecutorNoAllowedCallers`) — the
+executors deploy inert. Look the account up in the Mimic app **before**
+creating a live trigger; see [`docs/MIMIC_CUTOVER.md`](docs/MIMIC_CUTOVER.md).
 
 ## Prerequisites
 
@@ -65,22 +82,26 @@ Short version:
 
 1. Deploy the executors (`DeployKeeperExecutors` in
    `everstrat-xyz/contracts`) — they come up **inert** (no allowed callers).
-2. `mimic deploy` the `queue-keeper` function and create its task (time-based
-   trigger).
-3. Read the task's dedicated signer address from the Mimic app.
-4. `allowExecutorCaller(signer)` on `QueueKeeperExecutor` (ADMIN_ROLE).
-5. Verify: the run log shows `divergence=match` (or
-   `intended-improvement`), and a dry `perform()` from the signer path
-   succeeds.
+2. In the Mimic app, copy the smart account for this chain. Put it in
+   `.env` / the trigger input `smartAccount`.
+3. `mimic deploy` the `queue-keeper` function and create its task with that
+   address already filled (time-based trigger). `mimic deploy` only publishes
+   WASM; it does not load `.env`.
+4. `allowExecutorCaller` of **the same address** on `QueueKeeperExecutor`
+   (ADMIN_ROLE).
+5. Verify: the run log shows `divergence=match`, and a dry `perform()`
+   from that signer succeeds. `intended-improvement` / `truncated-scan`
+   are explained classes, not the default W1-only path (see "Why the
+   split").
 
 W2 deploys the same way: `mimic deploy` the `strategy-keeper` function,
-create its task, allowlist the signer.
+create its task with the same smart-account input, allowlist that signer.
 
 ## Repo layout
 
 ```text
 ├── mimic-functions/
-│   ├── queue-keeper/       # W1 — deep-scan Mimic function (AssemblyScript)
+│   ├── queue-keeper/       # W1 — off-chain decide (AssemblyScript)
 │   │   ├── src/function.ts # tick: read state, decide, emit intent
 │   │   ├── src/decide.ts   # decision engine (pure)
 │   │   ├── src/params.ts   # payload encoder — batch id + index range only
@@ -123,16 +144,18 @@ value it should verify:
   over the bytes it is about to send, so the rule holds on every tick rather
   than only in tests.
 
-**The clock is the observed block's.** Age comparisons use the tick timestamp
-of the state read, converted to seconds — never a wall clock, and never the
-runner's raw milliseconds (`mimic-functions/queue-keeper/src/function.ts`,
-`readState`). Mixing units skews every window by 1000×.
+**The tick clock is seconds, not milliseconds.** `createdAt` / `pricedAt` are
+`block.timestamp`. W1's `state.now` is Mimic's `context.timestamp` (ms) divided
+by 1000 (`function.ts` → `readState`). Forgetting the division skews every
+window by 1000×. That context is the runner's execution time, not
+`eth_getBlockByNumber` — a small skew vs chain is possible; mixing units is
+the failure mode that is not.
 
-**W1 may scan deeper than the contract; W2 may not.** This asymmetry is in the
-contracts: `QueueKeeperExecutor._processReport` validates a `ProcessRequests`
-claim per batch with no window (so the deep scan is a genuine win), while
-`StrategyKeeperExecutor` re-derives quantities with the same bounded helpers
-the view uses — hence W2's verbatim relay.
+**W1 may scan deeper than the contract; W2 may not.** `_execute(ProcessRequests)`
+applies no scan window. With W1 as the only performer that depth does not
+show up (every `perform` also peeks +25 skippable; a down W1 does not
+price). W2 must relay because perform uses the same bounded helpers. See
+"Why the split".
 
 ## Testing conventions
 

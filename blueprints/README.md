@@ -16,7 +16,7 @@ reading all of these:
 1. **Functions orchestrate, contracts decide.** Payloads carry *claims* (batch
    ids, actions) — never amounts. Executors re-derive everything from live
    state before acting.
-2. **W1 may scan deeper than the contract; W2 may not.** W1's executor
-   validates `ProcessRequests` per batch with no scan window, so scanning deep
-   off-chain genuinely wins. W2's executor re-derives quantities with the same
-   bounded helpers the view uses, so a "truer" number would revert every time.
+2. **W1's `_execute(ProcessRequests)` has no scan window; W2's `_execute` uses
+   the same bounded helpers as its view.** Equal 25-caps plus W1 also peeking
+   +25 skippable on every `perform` mean the extra depth does not show up
+   with this keeper as the only caller. A "truer" W2 number would revert.

@@ -1,10 +1,11 @@
 /**
  * Create the W2 cron trigger from `scripts/.env`.
  *
- * Requires SMART_ACCOUNT_ADDRESS: unlike the dry-run scripts, this is the call
- * that binds a real signer, and that same address is what ADMIN must pass to
- * `StrategyKeeperExecutor.allowExecutorCaller()` before `perform()` stops
- * reverting `KeeperExecutorNoAllowedCallers`.
+ * Requires SMART_ACCOUNT_ADDRESS: look it up in the Mimic Protocol App
+ * (this chain) *before* creating the trigger. Pass that same address to
+ * `StrategyKeeperExecutor.allowExecutorCaller()` or `perform()` reverts
+ * `KeeperExecutorNoAllowedCallers`. Dry-run / prefill may use `0x0`; a live
+ * trigger must not.
  */
 import { Client, EthersSigner } from '@mimicprotocol/sdk'
 
@@ -33,8 +34,8 @@ async function main(): Promise<void> {
 
   console.log('Successfully created trigger')
   console.log(endDateNotice())
-  console.log('Next: read the assigned smart account from the task page, then ADMIN calls')
-  console.log('StrategyKeeperExecutor.allowExecutorCaller(<smart account>) — until then perform() reverts.')
+  console.log('Next: ADMIN calls StrategyKeeperExecutor.allowExecutorCaller() with')
+  console.log('the same SMART_ACCOUNT_ADDRESS that is in this trigger — until then perform() reverts.')
 }
 
 main().catch((error) => {

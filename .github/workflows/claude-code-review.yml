@@ -107,12 +107,13 @@ jobs:
                `BigInt.pow` overflows silently past ~2^170. Flag raw `.get()`
                on the batch map and exponents near 256.
 
-            4. **W1 may scan deeper than the contract; W2 may not.** W1's
-               executor validates per batch with no window, so a deeper scan is
-               a genuine win. W2's executor re-derives with the same bounded
-               helpers — which is why W2's function only relays `checker()`
-               verbatim. Flag any change that widens W2's reach, narrows W1's
-               scan, or makes W2 interpret the payload it forwards.
+            4. **W1's `_execute(ProcessRequests)` has no scan window; W2's
+               `_execute` uses the same bounded helpers as its view.** Equal
+               25-caps plus W1 peeking +25 skippable on every `perform` mean
+               the extra depth does not show up with this keeper as the only
+               caller. A "truer" W2 number would revert — hence the relay.
+               Flag any change that widens W2's reach, narrows W1's scan, or
+               makes W2 interpret the payload it forwards.
 
             5. **Both functions read; only the intent writes.** The single
                state-changing path is the EvmCall intent each function emits at

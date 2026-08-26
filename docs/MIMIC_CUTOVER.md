@@ -11,6 +11,37 @@ deploy contracts first and bind tasks after.
 
 ---
 
+## Smart account wiring
+
+Three addresses, not one:
+
+| Address | Role |
+| --- | --- |
+| Your Mimic EOA (`PRIVATE_KEY`) | Signs trigger creation off-chain. Never calls `perform()`. |
+| Mimic smart account | `msg.sender` of `perform()`. Function input `smartAccount` (WASM `.addUser`) **and** `allowExecutorCaller` — the same value. |
+| Executor contract | Holds `KEEPER_ROLE`. Allowlists the smart account. |
+
+`mimic deploy` only publishes WASM (a `FUNCTION_CID`). It does not read
+`scripts/.env`. That file is local: `try-function`, `prefill-url`, and
+`create-trigger` use it. The Protocol App never loads it. `prefill-url`
+copies current `.env` values into a form URL (one-way).
+
+**Live path:** look up the smart account for this chain in the Mimic Protocol
+App *before* signing a trigger. Put it in `.env` as `SMART_ACCOUNT_ADDRESS`,
+in the trigger input, and in `allowExecutorCaller`. Confirm the task page
+shows that same address.
+
+**Dry-run / prefill:** `try-function` and `prefill-url` may use `0x0` because
+they do not settle. Do **not** submit a live trigger with `0x0` — the WASM
+would `.addUser` the zero address, and allowlisting a different SA would not
+help. Paste the real account into the App form before signing.
+
+The allowlist is settable because that account is not known when the executor
+is deployed, and recreating a task can rotate it: update the trigger input
+(sign a new version) and `removeExecutorCaller(old)` / `allowExecutorCaller(new)`.
+
+---
+
 ## 0. Preconditions
 
 | What | Where | Check |
@@ -19,10 +50,7 @@ deploy contracts first and bind tasks after.
 | Mimic account funded | [Mimic Protocol App](https://mimic.fi) | enough credit for ~1 task-tx/30min |
 | Registry addresses known | deploy output / `registry.getContractByKey` | note `QUEUE_KEEPER_EXECUTOR`, `STRATEGY_KEEPER_EXECUTOR` |
 | ADMIN_ROLE signer available | the DAO/multisig that holds it | it must call `allowExecutorCaller` |
-
-The smart-account address Mimic will use **does not exist yet** — it is
-assigned when the task is created. That is why the allowlist is a settable
-list rather than an immutable constructor arg.
+| Mimic smart account (this chain) | Protocol App | same address that will go in the trigger input and `allowExecutorCaller` |
 
 ---
 
@@ -50,20 +78,17 @@ deployment chain. Configure the function inputs:
 {
   "chainId": 10,
   "executor": "0x…",
-  "smartAccount": "<assigned below, then update>",
+  "smartAccount": "0x…",
   "maxFee": "1"
 }
 ```
 
-`smartAccount` is the Mimic signer the executor must allowlist — set it once
-the task exists (next step).
+`smartAccount` is the Mimic account for this chain (see **Smart account
+wiring**). Look it up in the App *before* signing. It is also the address
+ADMIN passes to `allowExecutorCaller`. After create, confirm the task page
+shows that same address.
 
-### 1.3 Find the dedicated signer
-
-Task detail → the smart account / dedicated signer address. Record it — it is
-the only address that will ever call `perform()`.
-
-### 1.4 Bind it (ADMIN_ROLE)
+### 1.3 Bind it (ADMIN_ROLE)
 
 ```solidity
 StrategyKeeperExecutor.allowExecutorCaller(<mimic-signer>);
@@ -76,7 +101,7 @@ isExecutorCaller(<mimic-signer>) == true
 executorCallerCount() == 1
 ```
 
-### 1.5 Verify the relay
+### 1.4 Verify the relay
 
 `checker()` must return `(canExec, execPayload)`:
 
@@ -88,7 +113,7 @@ Watch one full poll cycle before declaring W2 live.
 
 ---
 
-## 2. W1 — QueueKeeperExecutor (deep-scan function)
+## 2. W1 — QueueKeeperExecutor
 
 ### 2.1 Configure
 
@@ -112,14 +137,23 @@ Every key above is required by `manifest.yaml`; a missing one fails manifest
 validation when the trigger is created. `scripts/create-trigger.ts` builds the
 same set from `scripts/.env` (see `scripts/env.template`).
 
-`maxBatches` caps the off-chain scan width per tick. Protocol addresses are
-passed in rather than resolved from the Registry — W1 reads them before
-anything else, and a per-tick Registry round-trip buys nothing while the
-address book is timelocked. The **AMM** address is needed only for its pause
-flag: `_queueUpkeepStatus` refuses to recommend work while the AMM is paused,
-and W1 has to refuse for the same reason (`Controller.priceBatch` is
-`whenNotPaused` on the Controller alone, so an AMM-only pause would not stop
-the transaction).
+`maxBatches` (default 250) caps the off-chain header walk per tick so a
+tick cannot be unbounded. It is not a second live-priced cap:
+`MAX_BATCH_SCAN` already equals `MAX_LIVE_PRICED_BATCHES` (25), and
+`priceBatch` will not create a 26th. Truncation (`scanTruncatedAt`) needs
+`current - cursor ≥ 250`, or a tiny cap — the spec uses `maxBatches: 2`.
+Do not treat it as a production cadence event. With W1 as the only
+performer, a live batch the view cannot see also does not show up (every
+`perform` peeks +25 skippable; a down W1 does not price). See the README
+"Why the split".
+
+Protocol addresses are passed in rather than resolved from the Registry — W1
+reads them before anything else, and a per-tick Registry round-trip buys
+nothing while the address book is timelocked. The **AMM** address is needed
+only for its pause flag: `_queueUpkeepStatus` refuses to recommend work while
+the AMM is paused, and W1 has to refuse for the same reason
+(`Controller.priceBatch` is `whenNotPaused` on the Controller alone, so an
+AMM-only pause would not stop the transaction).
 
 ### 2.2 Test locally first
 
@@ -166,8 +200,8 @@ mimic deploy
 ```
 
 Then create the task in the Protocol App with a time-based trigger
-(every 1–5 minutes) and the inputs above, with `smartAccount` filled from the
-task's assigned signer.
+(every 1–5 minutes) and the inputs above, with `smartAccount` already filled
+from the App (same address you will allowlist). Do not create with `0x0`.
 
 ### 2.5 Bind it (ADMIN_ROLE)
 
@@ -185,8 +219,8 @@ every run:
 | Divergence | Meaning | Action |
 | --- | --- | --- |
 | `match` | run agrees with the on-chain view | none |
-| `intended-improvement` | run found work beyond the view's scan window | none — this is the point of W1 |
-| `truncated-scan` | the scan cap stopped the walk short | none, unless it persists across ticks |
+| `intended-improvement` | shorter prefix than a *mocked* larger view `count`, or a batch past ~`cursor+50` (needs another pricer while this cursor is frozen). Not the default W1-only path | none |
+| `truncated-scan` | `maxBatches` stopped the walk short of `current`. Default 250; the spec uses 2 | none, unless it persists across ticks |
 | `bug` | unexplained disagreement | **stop and investigate** |
 
 A `bug` divergence means either the off-chain model or the read layer is
@@ -224,7 +258,7 @@ keeper-health check is the part worth rebuilding wherever monitoring lands:
 smart account that fails `isExecutorCaller()` means bound-but-broken — a
 keeper that will never fire and reverts if it tries.
 
-Until something watches that, step 1.4 / 2.4's verification is the only thing
+Until something watches that, step 1.3 / 2.5's verification is the only thing
 confirming the binding, and nothing re-checks it afterwards. A rotated trigger
 that was never re-bound is silent.
 
@@ -248,7 +282,7 @@ pull-over-push), so pausing loses nothing but time.
 
 | Selector | Thrown when | Seen by |
 | --- | --- | --- |
-| `KeeperExecutorNoAllowedCallers` | allowlist is empty — executor still inert | first `perform()` after deploy, before step 1.4/2.5 |
+| `KeeperExecutorNoAllowedCallers` | allowlist is empty — executor still inert | first `perform()` after deploy, before step 1.3/2.5 |
 | `KeeperExecutorUnauthorizedCaller` | signer not allowlisted | a rotated/recreated task that was never re-bound |
 | `KeeperExecutorNoUpkeepNeeded` | claim re-validated against live state and rejected | a stale payload, or two tasks racing |
 | `EnforcedPause` | executor paused | deliberate ops pause |

@@ -32,11 +32,11 @@ export function required(name: string): string {
 /**
  * @param requireSmartAccount Pass `true` only when creating the trigger.
  *
- * The Mimic smart account is assigned *by* trigger creation, so it cannot be
- * known before it: a dry run or a prefill URL is exactly the case where it
- * does not exist yet. Those callers get the zero address, which is fine —
- * neither settles anything. `create-trigger.ts` demands the real one, because
- * that address is also what ADMIN passes to `allowExecutorCaller()`.
+ * Dry-run and prefill do not settle, so they may use the zero address.
+ * `create-trigger.ts` demands the real Mimic smart account (Protocol App,
+ * this chain): that value is the trigger input *and* what ADMIN passes to
+ * `allowExecutorCaller()`. A live trigger with `0x0` would `.addUser` the
+ * zero address.
  */
 export function inputs(requireSmartAccount = false): StrategyKeeperInputs {
   return {

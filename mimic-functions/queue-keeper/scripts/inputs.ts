@@ -37,11 +37,11 @@ export function required(name: string): string {
 /**
  * @param requireSmartAccount Pass `true` only when creating the trigger.
  *
- * The Mimic smart account is assigned *by* trigger creation, so it cannot be
- * known before it: a dry run or a prefill URL is exactly the case where it
- * does not exist yet. Those callers get the zero address, which is fine —
- * neither settles anything. `create-trigger.ts` demands the real one, because
- * that address is also what ADMIN passes to `allowExecutorCaller()`.
+ * Dry-run and prefill do not settle, so they may use the zero address.
+ * `create-trigger.ts` demands the real Mimic smart account (Protocol App,
+ * this chain): that value is the trigger input *and* what ADMIN passes to
+ * `allowExecutorCaller()`. A live trigger with `0x0` would `.addUser` the
+ * zero address.
  */
 export function inputs(requireSmartAccount = false): QueueKeeperInputs {
   return {
@@ -54,6 +54,8 @@ export function inputs(requireSmartAccount = false): QueueKeeperInputs {
     // on the Controller alone — so W1 has to check the AMM itself.
     amm: required('AMM_ADDRESS'),
     smartAccount: requireSmartAccount ? required('SMART_ACCOUNT_ADDRESS') : UNASSIGNED_SMART_ACCOUNT,
+    // 250 is far above the 25 live-priced cap. 50 is looser than
+    // maxUsersPerUpkeep (default 20). See README "Why the split".
     maxBatches: Number(process.env.MAX_BATCHES ?? 250),
     maxRequestsPerBatch: Number(process.env.MAX_REQUESTS_PER_BATCH ?? 50),
     maxFee: process.env.MAX_FEE ?? '1',

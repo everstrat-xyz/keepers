@@ -1,9 +1,8 @@
 version: 1.0.0
 name: EverStrat Queue Keeper
 description: >
-  W1 deep-scan keeper for the EverStrat redemption queue. Walks priced
-  batches beyond the on-chain MAX_BATCH_SCAN window and emits a
-  perform(action, params) EvmCall intent when work exists.
+  W1 queue keeper for the EverStrat redemption queue. Decides off-chain
+  and emits a perform(action, params) EvmCall intent when work exists.
 inputs:
   - chainId: uint32
   - amm: address
@@ -17,5 +16,4 @@ inputs:
 abis:
   - QueueKeeperExecutor: ./abis/QueueKeeperExecutor.json
   - IExitQueue: ./abis/IExitQueue.json
-  - IController: ./abis/IController.json
   - Pausable: ./abis/Pausable.json

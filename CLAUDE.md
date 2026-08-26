@@ -10,9 +10,11 @@ Automation for EverStrat's keeper plane, running on the
 [Mimic Network](https://mimic.fi):
 
 - **W1** (`mimic-functions/queue-keeper/`) — a Mimic **Solidity Function**
-  (AssemblyScript compiled to WASM) driving `QueueKeeperExecutor`. It scans the
-  exit queue deeper than the gas-bounded on-chain view and submits `perform()`
-  calldata through an oracle-signed EvmCall intent.
+  (AssemblyScript compiled to WASM) driving `QueueKeeperExecutor`. It
+  decides off-chain and submits `perform()` calldata through an
+  oracle-signed EvmCall intent. `_execute(ProcessRequests)` has no scan
+  window; with W1 as the only performer that extra depth does not show up
+  (see §3).
 - **W2** (`mimic-functions/strategy-keeper/`) — a thin Mimic relay function.
   `StrategyKeeperExecutor` exposes its own `checker()` returning
   `(canExec, execPayload)`; the function forwards the payload **verbatim** —
@@ -21,9 +23,8 @@ W4 (`freeze-watch/`), the read-only freeze-precursor watcher, was removed
 along with the Go toolchain and CRE CLI it was the last consumer of. It is in
 git history if it comes back.
 
-Governing principle, from `TECH_SPEC.md` §5:
-
-> **Workflows orchestrate. Contracts decide.**
+Governing principle: **functions orchestrate, contracts decide.** Payloads
+carry claims (batch ids, actions), never amounts.
 
 The executors live in [`everstrat-xyz/contracts`](https://github.com/everstrat-xyz/contracts).
 
@@ -54,46 +55,64 @@ this repo holds up its end by making amounts inexpressible:
 **Reviewing:** any new field in `Params`, any amount reaching `encode()`, any
 relaxation of the length check.
 
-### 2. The clock is the observed block's, never the wall clock
+### 2. The tick clock is seconds, not milliseconds
 
-Age comparisons (`minBatchAge`, `MAX_BATCH_PROCESSING_TIME`) use
-`block.timestamp` of the block the state was read at. The wall clock can sit
-ahead of the chain, and a batch's `createdAt` was recorded from
-`block.timestamp` — comparing the two compares different clocks, and would
-fail every tick.
-
-In W1 that means `state.now` derives from the runner's tick timestamp
-converted to seconds (`function.ts` → `readState`); nothing else. The runner
-hands the function a **millisecond** timestamp while every contract timestamp
-is in seconds — forgetting the division once skewed every window by 1000×.
+Age comparisons (`minBatchAge`, `MAX_BATCH_PROCESSING_TIME`) compare against
+`createdAt` / `pricedAt`, which are `block.timestamp`. W1's `state.now` is
+Mimic's `context.timestamp` **milliseconds** divided by 1000
+(`function.ts` → `readState`). Forgetting the division once skewed every
+window by 1000×. That context is the runner's execution time, not the block
+the oracle reads landed in — a small skew vs chain is possible; mixing units
+is the failure that is not.
 
 **Reviewing:** any `Date.now()` reaching a decision input, or any seconds/ms
 mixup at the read boundary.
 
 ### 3. W1 may scan deeper than the contract. W2 may not.
 
-This asymmetry is in the **contracts**, and it is the single easiest thing to
-get wrong:
+`MAX_BATCH_SCAN` equals `MAX_LIVE_PRICED_BATCHES` (25). The view peeks up to
+25 skippable ids then scans 25 more — a live batch at about `cursor+26` is
+already in view. `_execute(ProcessRequests)` still has no window.
 
-- `QueueKeeperExecutor._processReport` validates a `ProcessRequests` claim
-  **per batch, with no scan window**. So W1 scanning past the on-chain view's
-  25-batch window is a genuine win — the executor still accepts it.
-- `StrategyKeeperExecutor._processReport` re-derives every quantity with the
-  **same bounded helpers** the view uses. That is precisely why W2 is a pure
-  relay: a truer off-chain shortfall would be rejected on arrival.
+That extra depth does **not** fire with W1 as the only `perform` caller:
 
-`AdvanceCursor` is W1's exception: the executor advances the cursor with its
-*bounded* walk, so the claim is capped at what one execution can reach
+- Every successful `perform` (including `PriceBatch`) runs
+  `_advanceBatchCursor` (+25 skippable). W1 cannot accumulate a 25-long
+  dead prefix.
+- If W1 is down, nothing calls `priceBatch`, so `currentBatchId` does not
+  grow. Expired live work sits in the window you already had (≤25 +
+  unpriced current), it does not pile up in front of new live batches.
+- Seeing live work the view cannot requires another `KEEPER_ROLE` to keep
+  pricing while this cursor is frozen, *and* the first live id past
+  ~`cursor+50`.
+
+`maxBatches` (default 250) can still truncate the off-chain header walk
+(`scanTruncatedAt`). That needs `current - cursor ≥ 250`, or a tiny
+`maxBatches` (the spec uses 2). Do not treat truncation as a production
+cadence event.
+
+W1's `ProcessRequests` prefix uses the same walk as `_affordableRequests`,
+capped at `maxUsersPerUpkeep` (default 20). `maxRequestsPerBatch` defaults
+to 50. A shorter claim than a *correct* view is not something decide
+chooses; it would take `maxRequestsPerBatch < maxUsersPerUpkeep` or an
+oracle Controller balance below the view's. The shorter-prefix
+`intended-improvement` class exists because the executor accepts any
+prefix; the spec mocks a larger on-chain `count`.
+
+W2: `_execute` re-derives with the **same bounded helpers** the view uses.
+A truer off-chain shortfall would be rejected — hence the relay.
+
+`AdvanceCursor` is capped at the bounded peek
 (`decide.ts` → `peekAdvancedCursor(s, MAX_BATCH_SCAN)`).
 
 ### 4. AssemblyScript's `Map.get` aborts the whole module
 
 `Map.get` on a missing key is not `null` — it is `abort: "Key does not
-exist"`, which kills the tick. W1's scan can be truncated
-(`inputs.maxBatches`), leaving ids past the truncation point absent from the
-state map, so every access must probe `has()` first (`decide.ts` →
-`getBatch`). Same class of trap: `BigInt.pow` overflows silently past
-~2^170 — build `2^256` as `(2^128)^2` (`params.ts` → `word`).
+exist"`, which kills the tick. If `maxBatches` stops the header walk short,
+ids past that point are absent from the state map, so every access must
+probe `has()` first (`decide.ts` → `getBatch`). Same class of trap:
+`BigInt.pow` overflows silently past ~2^170 — build `2^256` as `(2^128)^2`
+(`params.ts` → `word`).
 
 **Reviewing:** any raw `.get()` on the batch map, any exponent near 256.
 
@@ -145,11 +164,13 @@ retargeted.
 ### Divergence classification is code, not judgment
 
 W1 cross-checks its decision against the on-chain view every tick and logs a
-class: `match`, `intended-improvement` (beyond the view's scan window),
-`truncated-scan`, or `bug`. Shadow-mode graduation was "zero unexplained
-divergences over 7 days" — "explained" is defined in `src/divergence.ts`, not
-argued per incident. A new source of benign disagreement needs a new class
-with a reason, not a shrug.
+class: `match`, `intended-improvement`, `truncated-scan`, or `bug`. With
+defaults and W1 as the only performer, production ticks should be `match`.
+The other two explained classes are for a mocked or mis-set view/scan cap
+(shorter prefix, `maxBatches: 2`) or a frozen cursor plus another pricer
+(batch past ~`cursor+50`). Shadow-mode graduation was "zero unexplained
+divergences over 7 days" — "explained" is defined in `src/divergence.ts`.
+A new source of benign disagreement needs a new class, not a shrug.
 
 ---
 
@@ -171,9 +192,13 @@ with a reason, not a shrug.
   the authoritative list — `scripts/create-trigger.ts` and
   `docs/MIMIC_CUTOVER.md` must name every key it declares, or trigger creation
   fails manifest validation.
-- **The Mimic smart-account signer is assigned when the task is created**,
-  which is why `KeeperExecutorBase` has a settable allowlist rather than an
-  immutable constructor arg. Executors deploy inert by design.
+- **The Mimic smart account is looked up in the Protocol App (per chain)
+  before a live trigger is signed.** It is a function input (`.addUser`)
+  *and* the address ADMIN passes to `allowExecutorCaller` — the same value.
+  Dry-run / prefill may use `0x0` because they do not settle; a live trigger
+  with `0x0` would target the zero address. The allowlist is settable because
+  that account is not known at executor deploy, and a recreated task can
+  rotate it. Executors deploy inert by design. See `docs/MIMIC_CUTOVER.md`.
 
 ### CI
 

@@ -19,13 +19,16 @@ import { convertAssets, isRelativelyLessThan, isValidRelativeDifference } from '
 
 /**
  * `QueueKeeperExecutor.MAX_BATCH_SCAN` — the gas bound on the on-chain
- * `queueUpkeepStatus` view and on `_advanceBatchCursor`.
+ * `queueUpkeepStatus` view and on `_advanceBatchCursor`. Same 25 as
+ * `MAX_LIVE_PRICED_BATCHES`; `priceBatch` will not create a 26th live batch.
  *
- * W1 deliberately scans past it (see decide). The executor's `_processReport`
- * does *not* apply the window when validating a `ProcessRequests` claim, so a
- * batch found beyond it is still executable — that is the whole point of
- * scanning off-chain. `AdvanceCursor` is the exception, and decide caps that
- * claim accordingly.
+ * `_execute(ProcessRequests)` does *not* apply this window, so a batch past
+ * it is still executable. With W1 as the only performer that depth does not
+ * show up: every `perform` peeks +25 skippable, and a down W1 does not
+ * price. Seeing live work the view cannot needs another `KEEPER_ROLE`
+ * pricing while this cursor is frozen, and the first live id past
+ * ~`cursor+50`. `AdvanceCursor` is the exception: decide caps that claim
+ * at the bounded peek.
  */
 export const MAX_BATCH_SCAN: BigInt = BigInt.fromI32(25)
 
@@ -83,8 +86,10 @@ export class Batch {
    * Unprocessed requests in `unprocessedUsers` order, starting at index 0. The
    * executor only accepts a prefix of this list, so order is load-bearing, not
    * incidental. May be shorter than unprocessedCount when the read was capped
-   * at maxUsersPerUpkeep — which is all the affordability model needs, since
-   * the executor caps there too.
+   * at maxUsersPerUpkeep (and then at maxRequestsPerBatch in the read layer).
+   * The executor caps at maxUsersPerUpkeep. Default maxRequestsPerBatch is 50,
+   * looser than the default 20, so a correct view and this walk agree on
+   * prefix length.
    */
   requests: Request[]
 
@@ -126,10 +131,11 @@ export class State {
   batches: Map<string, Batch>
   /**
    * Last batch id the read layer actually fetched when it capped the scan.
-   * Zero means the scan reached the current batch. A truncated scan can only
-   * cause W1 to propose *less* work than exists, never wrong work — but it
-   * makes "found nothing" ambiguous, so decide refuses PriceBatch until a
-   * later tick can finish the walk.
+   * Zero means the scan reached the current batch. Default `maxBatches` is
+   * 250, so truncation needs `current - cursor ≥ 250` (or a tiny cap — the
+   * spec uses 2). A truncated scan can only cause W1 to propose *less* work
+   * than exists, never wrong work — but it makes "found nothing" ambiguous,
+   * so decide refuses PriceBatch until a later tick can finish the walk.
    */
   scanTruncatedAt: BigInt
 
@@ -165,10 +171,10 @@ export class Decision {
   endIndex: BigInt
   reason: string
   /**
-   * The chosen batch sits past MAX_BATCH_SCAN from the executor's stored
-   * cursor — i.e. the on-chain view structurally could not have found it.
-   * Divergence classification uses this to separate a real improvement from
-   * a bug.
+   * The chosen batch sits past the view's reach (~cursor+50: peek 25
+   * skippable then scan 25). That is a genuine win only if another keeper
+   * priced while this cursor was frozen. Divergence classification uses
+   * this to separate that case from a bug.
    */
   scannedBeyondWindow: bool
 
@@ -286,7 +292,8 @@ export function onChainScanWindowEnd(s: State): BigInt {
 /**
  * Mirrors `QueueKeeperExecutor._peekAdvancedCursor`. scanLimit bounds how far
  * the cursor may walk: pass MAX_BATCH_SCAN to reproduce what the executor will
- * do; pass zero for an unbounded off-chain walk.
+ * do; pass zero to walk every fetched id (still capped by `maxBatches` at
+ * read time — missing headers return null from getBatch).
  */
 export function peekAdvancedCursor(s: State, scanLimit: BigInt): BigInt {
   let cursor = s.nextBatchIdToProcess
@@ -305,11 +312,13 @@ export function peekAdvancedCursor(s: State, scanLimit: BigInt): BigInt {
  * `QueueKeeperExecutor.queueUpkeepStatus` — process work first, then price the
  * current batch, then advance the cursor.
  *
- * The deliberate difference from the on-chain view is the scan width: this
- * walks every batch from the cursor to the current one, where the view stops
- * after MAX_BATCH_SCAN. That is the improvement the off-chain keeper exists to
- * provide, and it is safe for `ProcessRequests` because `_processReport`
- * re-derives affordability for the named batch without applying the window.
+ * This walks every fetched batch from the cursor to the current one (the
+ * fetch itself is capped at `maxBatches`). The view peeks 25 skippable then
+ * scans 25. With W1 as the only performer that extra depth does not fire:
+ * every `perform` also peeks +25 skippable, and a down W1 does not price.
+ * `_execute(ProcessRequests)` still has no window, so a batch found past
+ * ~`cursor+50` would be accepted — that needs another `KEEPER_ROLE` to keep
+ * pricing while this cursor is frozen.
  *
  * `AdvanceCursor` gets the opposite treatment: the executor advances its
  * cursor with the *bounded* walk, so a claim past `cursor + MAX_BATCH_SCAN` is
@@ -324,7 +333,8 @@ export function decide(s: State): Decision {
   const fullCursor = peekAdvancedCursor(s, BigInt.zero())
   const windowEnd = onChainScanWindowEnd(s)
 
-  // Process the oldest batch with an affordable prefix. Full scan.
+  // Process the oldest batch with an affordable prefix. Walks every id we
+  // fetched (cursor → current, capped by maxBatches).
   for (let id = fullCursor; id < s.currentBatchId; id = id.plus(BigInt.fromI32(1))) {
     if (isBatchSkippable(s, id)) continue
     const affordable = affordableRequests(s, id)

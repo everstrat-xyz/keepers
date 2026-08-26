@@ -17,7 +17,7 @@ flowchart TB
         T1["time-based trigger"]
         T2["time-based trigger<br/>(every N min)"]
 
-        subgraph W1["W1 — queue-keeper (Mimic function, deep scan)"]
+        subgraph W1["W1 — queue-keeper (Mimic function)"]
         end
 
         subgraph W2["W2 — strategy-keeper (Mimic relay function)"]
@@ -40,7 +40,7 @@ flowchart TB
     T1 -- fires --> W1
     T2 -- fires --> W2
 
-    W1 -- "oracle EvmCall reads: batchInfo, requestInfo,<br/>balances, pause flags<br/>(full scan, config-bounded)" --> EQ
+    W1 -- "oracle EvmCall reads: batchInfo, requestInfo,<br/>balances, pause flags<br/>(cursor → current, maxBatches)" --> EQ
     W1 -- "pause fan-out" --> CTRL & AMM
     W1 -- "cross-check:<br/>queueUpkeepStatus" --> QX
     W2 -- "oracle EvmCall read:<br/>checker()" --> SX
@@ -57,19 +57,17 @@ flowchart TB
 
 ## Why W1 decides off-chain and W2 does not
 
-The split is forced by the contracts, not a preference:
+The *permission* to go deeper is in the contracts; with W1 as the only
+performer it does not show up. See the README "Why the split".
 
-- `QueueKeeperExecutor._processReport` validates a `ProcessRequests` claim
-  **per batch with no scan window**, so a function scanning past the
-  on-chain view's 25-batch `MAX_BATCH_SCAN` finds work the view
-  structurally cannot — and the executor accepts it. That depth is W1's whole
-  value.
-- `StrategyKeeperExecutor._processReport` re-derives every quantity with the
-  **same bounded helpers** its view uses, so a "truer" off-chain number would
-  be rejected on arrival. Its own `checker()` is therefore exactly as good as
-  any off-chain decider could be — so W2's function only relays its payload
-  verbatim, and a modified payload is structurally impossible: the bytes come
-  from the contract view, not from function code.
+- `MAX_BATCH_SCAN` is the same 25 as `MAX_LIVE_PRICED_BATCHES`. The view
+  peeks 25 skippable then scans 25 — live work at ~`cursor+26` is in view.
+- `_execute(ProcessRequests)` has no window. Every W1 `perform` also peeks
+  +25 skippable, so this keeper cannot grow a dead prefix and then need the
+  extra scan. A down W1 does not price, so `current` does not run away.
+- W2's `_execute` uses the same bounded helpers as its view — a "truer"
+  off-chain number would revert — so the function only relays `checker()`
+  verbatim.
 
 ## The W1 tick shape
 
@@ -79,7 +77,7 @@ The split is forced by the contracts, not a preference:
 flowchart TB
     T["trigger fires"] --> P["read pause flags (executor, Controller,<br/>ExitQueue, AMM), cursor, knobs,<br/>tick timestamp (ms → s)"]
     P -- "anything paused" --> NONE1["emit nothing<br/>(every action would revert)"]
-    P --> S["full scan cursor → current:<br/>batchInfo + unprocessedUsersCount,<br/>then user lists + requestInfo for candidates"]
+    P --> S["header walk cursor → current<br/>(capped at maxBatches):<br/>batchInfo + unprocessedUsersCount,<br/>then user lists + requestInfo for candidates"]
     S --> D["decide(state)<br/>(pure, src/decide.ts)"]
     D --> X["cross-check vs queueUpkeepStatus()<br/>(src/divergence.ts)"]
     X -- "class = bug" --> EL["log Error — must stay at zero"]
@@ -91,7 +89,6 @@ flowchart TB
     E --> OUT["EvmCall intent to the executor<br/>(selector from the generated wrapper)"]
 ```
 
-One clock, deliberately: `state.now` is the tick timestamp converted to
-seconds — batch ages are compared against `createdAt` values recorded from
-`block.timestamp`, and a wall clock (or the runner's raw milliseconds) would
-skew every `minBatchAge` check by seconds or 1000×.
+One clock, deliberately: `state.now` is Mimic `context.timestamp` (ms) divided
+by 1000. Batch ages are `block.timestamp`. Mixing units skews every window by
+1000×; the runner time is not `eth_getBlockByNumber`.

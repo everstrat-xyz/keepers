@@ -7,11 +7,11 @@
  * account, or emit nothing.
  *
  * Ported from the CRE-era Go workflow. What changed:
- * no DON report, no envelope, no 15-read budget (the scan is still bounded by
- * inputs.maxBatches so a long stall cannot produce an unbounded tick), and
- * reads now go through oracle-signed EvmCall queries. What did not change:
- * the decision engine, the "no amounts in payloads" rule, and the on-chain
- * cross-check with divergence classification.
+ * no DON report, no envelope, no 15-read budget (the header walk is still
+ * bounded by inputs.maxBatches, default 250 — truncation is not a production
+ * cadence event), and reads now go through oracle-signed EvmCall queries.
+ * What did not change: the decision engine, the "no amounts in payloads"
+ * rule, and the on-chain cross-check with divergence classification.
  */
 
 import { BigInt, Bytes, environment, log, TokenAmount } from '@mimicprotocol/lib-ts'
@@ -34,8 +34,9 @@ export default function main(): void {
   const state = readState(executor, exitQueue, controller)
   const decision = decide(state)
 
-  // Cross-check against the gas-bounded on-chain view. A failure here loses
-  // the cross-check, not the decision — the keeper must keep working.
+  // Cross-check against queueUpkeepStatus(). A failure here loses the
+  // cross-check, not the decision — the keeper must keep working. Default
+  // ticks with W1 as the only performer should be `match`.
   let divergenceClass = 'unavailable'
   const status = executor.queueUpkeepStatus()
   if (!status.isError) {
@@ -68,8 +69,10 @@ export default function main(): void {
 
   // perform's params bytes come from params.encode, whose surface admits only
   // a batch id and an index range: no ETH amount can enter the payload. The
-  // generated wrapper builds the exact calldata (selector + action + params),
-  // byte-identical to what the on-chain checker() would emit.
+  // generated wrapper builds selector + action + those params. That encoding
+  // matches checker() when the action matches. `intended-improvement` is a
+  // different payload by definition (mocked shorter prefix, or a batch past
+  // ~cursor+50).
   const paramsBytes = encode(
     decision.action,
     new Params(decision.action, decision.batchId, BigInt.zero(), decision.endIndex)
@@ -101,12 +104,15 @@ function actionName(a: u8): string {
  */
 function readState(executor: QueueKeeperExecutor, exitQueue: IExitQueue, controller: Pausable): State {
   const context = environment.getContext()
-  // The runner hands us a wall-clock millisecond timestamp; the queue's batch
-  // and pricing timestamps are block-time seconds. Every age and window
-  // comparison in decide() works in seconds, so convert once, here.
+  // The runner hands us a millisecond timestamp; the queue's batch and
+  // pricing timestamps are block-time seconds. Convert once, here. This is
+  // Mimic execution context, not eth_getBlockByNumber — mixing units (ms vs s)
+  // is the 1000× failure mode.
   const now = BigInt.fromString(context.timestamp.toString()).div(BigInt.fromI32(1000))
 
   const maxBatches = inputs.maxBatches > 0 ? inputs.maxBatches : 250
+  // Looser than maxUsersPerUpkeep (default 20). A tighter value is the only
+  // ops-side way W1 would claim a shorter prefix than a correct view.
   const maxRequests = inputs.maxRequestsPerBatch > 0 ? inputs.maxRequestsPerBatch : 50
 
   // Pause fan-out: the executor plus every contract `_queueUpkeepStatus` gates
@@ -165,8 +171,9 @@ function readState(executor: QueueKeeperExecutor, exitQueue: IExitQueue, control
   }
   state.controllerBalance = balanceResult.unwrap()
 
-  // Scan range: the executor's cursor through the current batch (inclusive of
-  // the current one, because PriceBatch needs its age and unprocessed count).
+  // Scan range: cursor through the current batch (inclusive — PriceBatch
+  // needs its age and unprocessed count). Default maxBatches 250; truncation
+  // needs current − cursor ≥ 250.
   let first = cursor
   const last = currentBatchId
   if (first > last) first = last
