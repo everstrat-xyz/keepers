@@ -4,7 +4,7 @@ name: Claude PR Review
 #
 # The contracts repo pairs this with a mermaid architecture checker; there is no
 # equivalent here. What this repo has instead is a set of constraints that are
-# invisible to a generic reviewer and expensive to get wrong — CRE's read
+# invisible to a generic reviewer and expensive to get wrong — the read
 # budget, the block-timestamp rule, the no-amounts guarantee — so the prompt
 # names them explicitly and points at CLAUDE.md for the reasoning.
 
@@ -114,9 +114,10 @@ jobs:
                verbatim. Flag any change that widens W2's reach, narrows W1's
                scan, or makes W2 interpret the payload it forwards.
 
-            5. **W4 (`freeze-watch/`) must not be able to write.** It is the
-               last CRE-era workflow here; flag any write-capable code added to
-               its dependency graph.
+            5. **Both functions read; only the intent writes.** The single
+               state-changing path is the EvmCall intent each function emits at
+               the end of its tick. Flag anything that reaches the chain
+               outside it.
 
             6. **Golden test values must come from an independent encoder.**
                The specs build expected calldata with ethers' `Interface` over
@@ -125,15 +126,16 @@ jobs:
                hand-computed fixtures.
 
             7. **Vendored ABIs are never hand-edited.** Flag a changed
-               `contracts/evm/src/abi/*.json` without a matching commit-hash
-               update in `SOURCE.md`.
+               `mimic-functions/*/abis/*.json` without a matching commit-hash
+               update in `mimic-functions/ABIS.md`, and any ABI that no
+               `manifest.yaml` lists.
 
             ## Then the ordinary review
 
             Correctness bugs, error handling that loses information, test
             coverage for the branches that matter, and anything that would
-            behave differently under Mimic's execution model (or CRE's, for
-            freeze-watch) than it appears to.
+            behave differently under Mimic's execution model than it appears
+            to.
 
             Prefer a small number of specific, actionable findings over a broad
             survey. If the PR is sound, say so plainly and briefly rather than

@@ -1,6 +1,7 @@
 /**
  * W1 queue-keeper decision engine — ported from the CRE-era Go implementation
- * (`pkg/queue/decide.go`) with its semantics intact.
+ * (`pkg/queue/decide.go`, removed with the Go plane; `git log` has it) with
+ * its semantics intact.
  *
  * The engine decides what `QueueKeeperExecutor.perform` should be called with,
  * and the params surface here stays closed: the only expressible values are a

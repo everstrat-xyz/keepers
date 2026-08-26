@@ -17,8 +17,9 @@ Automation for EverStrat's keeper plane, running on the
   `StrategyKeeperExecutor` exposes its own `checker()` returning
   `(canExec, execPayload)`; the function forwards the payload **verbatim** —
   no off-chain re-derivation, no payload interpretation.
-- **W4** (`freeze-watch/`) — a CRE-era Go workflow, observability only, **no
-  writes**. Its own migration is deferred.
+W4 (`freeze-watch/`), the read-only freeze-precursor watcher, was removed
+along with the Go toolchain and CRE CLI it was the last consumer of. It is in
+git history if it comes back.
 
 Governing principle, from `TECH_SPEC.md` §5:
 
@@ -96,11 +97,12 @@ state map, so every access must probe `has()` first (`decide.ts` →
 
 **Reviewing:** any raw `.get()` on the batch map, any exponent near 256.
 
-### 5. W4 cannot write
+### 5. Both functions read; only the intent writes
 
-`freeze-watch/` has no code path from an Alert to a transaction. That is the
-guarantee — actuation would require adding code a reviewer can see. NAV
-guardian actuation is a separate epic behind DAO sign-off.
+The single state-changing path in either function is the EvmCall intent it
+emits at the end of a tick. Everything else is an oracle-backed read. Anything
+that reaches the chain outside that path is new power in the keeper plane and
+needs to be seen as such.
 
 ---
 
@@ -153,18 +155,16 @@ with a reason, not a shrug.
 
 ## Repo mechanics
 
-- **`go test ./...` does not work** — freeze-watch's main is
-  `//go:build wasip1`, so a host toolchain excludes it. Use `./pkg/...
-  ./contracts/...` for host packages, as the Makefile does.
-- **`make check`** = Go fmt+vet+lint+test+build, plus both Mimic functions'
-  compile + mocha.
+- **`make check`** = lint plus compile + mocha for both Mimic functions. There
+  is no Go in this repo any more; `make install` bootstraps both functions.
 - **The Mimic CLI's `mimic test` spawns a tsx IPC pipe** that sandboxed
   environments block; run it (and `npm test`) outside restricted sandboxes.
-- **Vendored ABIs are never hand-edited.** Refresh from `forge build` output in
-  `everstrat-xyz/contracts` per
-  [`contracts/evm/src/abi/SOURCE.md`](contracts/evm/src/abi/SOURCE.md) and
-  update the pinned commit in the same PR. `Pausable.json` and
-  `Multicall3.json` are hand-written exceptions, documented there.
+- **Vendored ABIs are never hand-edited.** Each function's `abis/` is refreshed
+  from `forge build` output in `everstrat-xyz/contracts` per
+  [`mimic-functions/ABIS.md`](mimic-functions/ABIS.md); update the pinned
+  commit in the same PR. `Pausable.json` is a hand-written exception,
+  documented there. An ABI that no `manifest.yaml` lists should be deleted —
+  it compiles into nothing and implies a read the function does not make.
 - **Addresses are not secrets.** They are public config. W1's inputs carry the
   executor, Controller, ExitQueue and AMM addresses plus the Mimic smart
   account; W2's carry the executor and the smart account. `manifest.yaml` is
@@ -177,12 +177,16 @@ with a reason, not a shrug.
 
 ### CI
 
-A job that reports success while doing nothing is worse than no job. The
+A job that reports success while doing nothing is worse than no job. A CRE
 simulate job once did exactly that for months — gated on a secret it did not
-need — and hid both missing coverage and a broken CLI install.
+need — and hid both missing coverage and a broken CLI install. It is gone with
+W4, and the rule it taught outlives it: never let an absent secret, or a job
+that skipped, look like a pass.
 
-So: gate on the secret actually required, and make skips **loud** (warning
-annotation plus run-summary note). Never let an absent secret look like a pass.
+What remains is one matrix job compiling each function and running its specs
+against the compiled artifact. Note what it does **not** cover: no read path is
+exercised against a real chain, so ABI drift is caught by the vendored files,
+not by execution.
 
 ---
 

@@ -2,13 +2,13 @@
 
 How the components in this repo relate to Mimic and the EverStrat contracts.
 Files: `mimic-functions/queue-keeper/`, `mimic-functions/strategy-keeper/`,
-`freeze-watch/`, `pkg/*`, and the executors in
+and the executors in
 [`everstrat-xyz/contracts`](https://github.com/everstrat-xyz/contracts).
 
 W1/W2 moved off Chainlink CRE when Automation was sunset and CRE turned out
 not to be permissionless (a Gelato interlude ended the same way when Gelato
-sunset its automation). W4 (freeze-watch) still runs on CRE pending its own
-migration (deferred).
+sunset its automation). W4 (freeze-watch) was a read-only CRE workflow and has
+been removed rather than carried unmigrated — see the README.
 
 ```mermaid
 flowchart TB
@@ -24,19 +24,11 @@ flowchart TB
         end
     end
 
-    subgraph CRE["Chainlink CRE (W4 only, deferred)"]
-        W4["W4 — freeze-watch (no writes)"]
-    end
-
     subgraph CHAIN["EVM chain"]
-        MC["Multicall3<br/>0xcA11...CA11"]
-
         subgraph PROTOCOL["EverStrat protocol"]
-            REG["Registry"]
             CTRL["Controller"]
             EQ["ExitQueue"]
             AMM["AMM"]
-            SM["StrategyManager"]
         end
 
         subgraph EXEC["Keeper executors (caller-allowlisted)"]
@@ -45,16 +37,13 @@ flowchart TB
         end
     end
 
-    WEBHOOK["Ops webhook<br/>(secret ALERT_WEBHOOK_URL)"]
-
     T1 -- fires --> W1
     T2 -- fires --> W2
 
-    W1 -- "oracle EvmCall reads: batchInfo, requestInfo,<br/>balances, pause flags<br/>(full scan, config-bounded)" --> MC
-    W1 -- "cross-check:<br/>queueUpkeepStatus" --> MC
+    W1 -- "oracle EvmCall reads: batchInfo, requestInfo,<br/>balances, pause flags<br/>(full scan, config-bounded)" --> EQ
+    W1 -- "pause fan-out" --> CTRL & AMM
+    W1 -- "cross-check:<br/>queueUpkeepStatus" --> QX
     W2 -- "oracle EvmCall read:<br/>checker()" --> SX
-    W4 -- "reads: pause flags, feed ages,<br/>executor liveness<br/>(≤15 per tick, via Multicall3)" --> MC
-    MC --- REG & CTRL & EQ & AMM & SM
 
     W1 -- "EvmCall intent: perform(action, params)<br/>from the smart-account signer" --> QX
     W2 -- "EvmCall intent: execPayload verbatim,<br/>from the smart-account signer" --> SX
@@ -62,9 +51,6 @@ flowchart TB
     QX -- "re-validates, then calls<br/>(KEEPER_ROLE)" --> CTRL
     SX -- "re-validates, then calls<br/>(KEEPER_ROLE)" --> CTRL
 
-    W4 -- "alert digest (HTTP POST,<br/>consensus-agreed)" --> WEBHOOK
-
-    style W4 fill:#e8f0fe,stroke:#5c6bc0
     style W1 fill:#e8f5e9,stroke:#43a047
     style W2 fill:#fff8e1,stroke:#ffb300
 ```
@@ -91,8 +77,7 @@ The split is forced by the contracts, not a preference:
 
 ```mermaid
 flowchart TB
-    T["trigger fires"] --> R["resolve Controller / ExitQueue<br/>addresses (executor + registry are inputs)"]
-    R --> P["read pause flags,<br/>cursor, knobs, tick timestamp (ms → s)"]
+    T["trigger fires"] --> P["read pause flags (executor, Controller,<br/>ExitQueue, AMM), cursor, knobs,<br/>tick timestamp (ms → s)"]
     P -- "anything paused" --> NONE1["emit nothing<br/>(every action would revert)"]
     P --> S["full scan cursor → current:<br/>batchInfo + unprocessedUsersCount,<br/>then user lists + requestInfo for candidates"]
     S --> D["decide(state)<br/>(pure, src/decide.ts)"]

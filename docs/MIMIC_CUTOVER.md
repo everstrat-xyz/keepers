@@ -182,12 +182,18 @@ graduation.
 
 ---
 
-## 4. W4 — freeze-watch
+## 4. W4 — freeze-watch (removed)
 
-Out of scope here (deferred). When it migrates, its keeper-health check reads
-`executorCallerCount()` and, when `mimicProxyAddress` is configured,
-`isExecutorCaller(proxy)`. An empty allowlist or a missing proxy is reported
-as bound-but-broken, which is the state W4 exists to catch.
+W4 was the read-only freeze-precursor and keeper-health watcher, and it has
+been removed rather than carried along unmigrated (see the README). Its
+keeper-health check is the part worth rebuilding wherever monitoring lands:
+`executorCallerCount() == 0` means the executor is inert, and a configured
+smart account that fails `isExecutorCaller()` means bound-but-broken — a
+keeper that will never fire and reverts if it tries.
+
+Until something watches that, step 1.4 / 2.4's verification is the only thing
+confirming the binding, and nothing re-checks it afterwards. A rotated trigger
+that was never re-bound is silent.
 
 ---
 

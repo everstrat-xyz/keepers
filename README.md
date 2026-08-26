@@ -5,15 +5,20 @@ Automation for EverStrat's keeper plane, on the [Mimic Network](https://mimic.fi
 The Chainlink CRE workflows this repo was built on were retired when Chainlink
 Automation was sunset and CRE turned out not to be permissionless; a brief
 Gelato interlude ended the same way when Gelato sunset its automation product.
-W1 and W2 now run as Mimic functions; W4 remains a CRE-era Go workflow pending
-its own migration (deferred).
+W1 and W2 now run as Mimic functions, and they are all this repo holds.
 
 | Component | Role | On-chain target | Model |
 | --- | --- | --- | --- |
 | `mimic-functions/queue-keeper/` | W1 — exit-queue automation | `QueueKeeperExecutor` | Mimic **Solidity Function** (deep scan off-chain) |
 | `mimic-functions/strategy-keeper/` | W2 — strategy automation | `StrategyKeeperExecutor` | Mimic function relaying the contract's own `checker()` |
-| `freeze-watch/` | W4 — freeze precursors and keeper health (read-only) | — | CRE workflow (Go, deferred) |
-| `pkg/` | Shared Go code used by W4 | — | — |
+
+**W4 (freeze-watch)** — the read-only freeze-precursor and keeper-health
+watcher — was a CRE-era Go workflow and has been **removed** rather than
+carried along unmigrated: it was the last thing keeping a Go toolchain, a CRE
+CLI dependency, and a `cre workflow simulate` CI job in a repo that is
+otherwise pure AssemblyScript. It is recoverable from git history
+(`git log -- freeze-watch/`), and its observability belongs in whatever
+monitoring stack replaces it rather than in the keeper plane.
 
 ## Why the split
 
@@ -35,17 +40,15 @@ only act once a task is created and its signer bound.
 
 ## Prerequisites
 
-- **Node** `20+` for the Mimic functions (`mimic-functions/*`)
-- **Go** `1.25.3+` for W4 and `pkg/`
+- **Node** `20+`
 - A [Mimic](https://mimic.fi) account, funded
-- **CRE CLI** (`cre`) — only for W4 simulate, until its migration
 
 ## Local checks
 
 ```bash
-make check     # Go: fmt + vet + lint + test + wasip1 build; functions: compile + mocha
-make test      # Go tests only
-make functions # Mimic functions compile + tests
+make install   # npm install in both functions
+make check     # lint + compile + specs for both functions
+make test      # compile + specs only
 
 # Or directly:
 cd mimic-functions/queue-keeper
@@ -79,33 +82,31 @@ create its task, allowlist the signer.
 ├── mimic-functions/
 │   ├── queue-keeper/       # W1 — deep-scan Mimic function (AssemblyScript)
 │   │   ├── src/function.ts # tick: read state, decide, emit intent
-│   │   ├── src/decide.ts   # decision engine (pure, unit-tested)
+│   │   ├── src/decide.ts   # decision engine (pure)
 │   │   ├── src/params.ts   # payload encoder — batch id + index range only
 │   │   └── tests/          # raw-mock oracle harness + scenario specs
-│   └── strategy-keeper/    # W2 — checker() relay, payload forwarded verbatim
-├── freeze-watch/           # W4 — CRE-era Go workflow (deferred)
-├── pkg/
-│   ├── chains/             # Per-chain constants + config validation
-│   ├── evmread/            # CRE reads: ABI, Multicall3 batching, budget (W4)
-│   ├── registry/           # Registry keys and role identifiers
-│   └── freezewatch/        # W4 alert thresholds and payloads
-├── contracts/evm/src/abi/  # Vendored contract ABIs + Go accessors
-├── docs/
-│   ├── MIMIC_CUTOVER.md    # The cutover runbook
-│   └── LOCAL_FORK.md       # Run W4 against a real deployment
-└── blueprints/             # Design notes (W4 retained; W1/W2 historical
-                            #  CRE blueprints removed with the Go workflows)
+│   ├── strategy-keeper/    # W2 — checker() relay, payload forwarded verbatim
+│   │   ├── src/function.ts # tick: read checker(), relay execPayload
+│   │   └── tests/
+│   └── ABIS.md             # Vendored-ABI provenance and refresh recipe
+├── docs/MIMIC_CUTOVER.md   # The cutover runbook
+└── blueprints/             # Design notes (01 — system overview)
 ```
 
 ## The address book
 
-Only `registry` is configured; every other protocol address is resolved from
-the Registry at tick time where possible, so a redeploy that re-registers a
-contract cannot leave the keeper pointed at a dead address.
+Protocol addresses are **function inputs**, declared in each `manifest.yaml`:
+W1 takes the executor, Controller, ExitQueue and AMM; W2 takes the executor.
+Both also take the Mimic smart account that will call `perform()`.
 
-The same rule holds in the W1 function: `controller` and `exitQueue` come
-from `registry.getContractByKey(...)`, keyed by `keccak256("CONTROLLER")` etc.
-— the same constants `Auth.sol` uses.
+The AMM is there for one reason — its pause flag. `queueUpkeepStatus` refuses
+to recommend work while the AMM is paused, and W1 has to refuse for the same
+reason: `Controller.priceBatch` is `whenNotPaused` on the Controller alone, so
+an AMM-only pause would not stop the transaction.
+
+Because the addresses are inputs rather than Registry lookups, a redeploy that
+re-registers a contract needs the triggers updated. That is the trade for not
+paying a Registry round-trip per tick against a timelocked address book.
 
 ## Hard constraints carried over from the CRE era
 
@@ -118,7 +119,9 @@ value it should verify:
   (`mimic-functions/queue-keeper/src/params.ts`).
 - `decode()` enforces the **exact** wire length per action, because all
   layouts are static and a smuggled amount can only appear as a trailing word
-  that Solidity's `abi.decode` would silently ignore.
+  that Solidity's `abi.decode` would silently ignore. `function.ts` runs it
+  over the bytes it is about to send, so the rule holds on every tick rather
+  than only in tests.
 
 **The clock is the observed block's.** Age comparisons use the tick timestamp
 of the state read, converted to seconds — never a wall clock, and never the
@@ -130,10 +133,6 @@ contracts: `QueueKeeperExecutor._processReport` validates a `ProcessRequests`
 claim per batch with no window (so the deep scan is a genuine win), while
 `StrategyKeeperExecutor` re-derives quantities with the same bounded helpers
 the view uses — hence W2's verbatim relay.
-
-**W4 cannot write.** `freeze-watch/` has no code path from an Alert to a
-report. That guarantee is an import away from breaking, which is exactly why
-it is spelled out here.
 
 ## Testing conventions
 
@@ -168,20 +167,16 @@ specs' exact-calldata assertions.
 
 ## CI baseline
 
-GitHub Actions (`.github/workflows/ci.yml`):
+GitHub Actions (`.github/workflows/ci.yml`) runs one job, **functions**, as a
+matrix over `queue-keeper` and `strategy-keeper`: `npm ci`, lint, then `npm
+test` — which compiles each function to WASM and runs its specs against that
+artifact.
 
-1. **go** — module tidy check, vet + `-race` tests on `pkg/...`/`contracts/...`,
-   a wasip1 build of freeze-watch with the CRE 20 MB compressed-size check,
-   and gofmt.
-2. **lint** — golangci-lint v2, host pass plus a wasip1 pass for freeze-watch.
-3. **functions** — `npm install`, compile, and mocha for both Mimic
-   functions.
-4. **simulate** — freeze-watch through `cre workflow simulate`, gated on
-   `CRE_API_KEY`; a skip is a loud warning annotation, never a silent pass.
-
-`fork-e2e.yml` (scheduled/manual) deploys the protocol to an anvil Sepolia
-fork, refresh-checks the vendored ABIs against that build, and simulates
-freeze-watch against it.
+Nothing here exercises the read path against a real chain. The specs mock the
+oracle, so a signature drift is caught by the vendored ABIs (see
+[`mimic-functions/ABIS.md`](mimic-functions/ABIS.md)) rather than by
+execution. A forked-deployment e2e needs a Mimic runner pointed at an anvil
+fork and is not built yet.
 
 ## Automated PR review
 
