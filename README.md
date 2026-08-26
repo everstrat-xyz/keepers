@@ -1,311 +1,214 @@
-# EverStrat Keepers (CRE)
+# EverStrat Keepers (Mimic)
 
-Go workflows for the [Chainlink Runtime Environment (CRE)](https://docs.chain.link/cre) that drive EverStrat’s keeper plane:
+Automation for EverStrat's keeper plane, on the [Mimic Network](https://mimic.fi).
 
-| Package | Role | On-chain consumer |
-| --- | --- | --- |
-| `queue-keeper/` | W1 — exit-queue automation | `CREQueueExecutor` |
-| `strategy-keeper/` | W2 — strategy automation | `CREStrategyExecutor` |
-| `freeze-watch/` | W4 — freeze precursors and keeper health (read-only) | — |
-| `pkg/` | Shared Envelope / report / chain-config code used by both | — |
+The Chainlink CRE workflows this repo was built on were retired when Chainlink
+Automation was sunset and CRE turned out not to be permissionless; a brief
+Gelato interlude ended the same way when Gelato sunset its automation product.
+W1 and W2 now run as Mimic functions, and they are all this repo holds.
 
-Language is **Go** (WASM / `wasip1`). W1 and W2 are both implemented and run in **shadow mode** — they decide an action each tick and cross-check it against the on-chain view, but do not write. Live `writeReport` stays off until the Sepolia cutover ([#6](https://github.com/everstrat-xyz/keepers/issues/6)).
+| Component | Role | On-chain target | Model |
+| --- | --- | --- | --- |
+| `mimic-functions/queue-keeper/` | W1 — exit-queue automation | `QueueKeeperExecutor` | Mimic function (off-chain decide; same 25-cap as the view) |
+| `mimic-functions/strategy-keeper/` | W2 — strategy automation | `StrategyKeeperExecutor` | Mimic function relaying the contract's own `checker()` |
+
+**W4 (freeze-watch)** — the read-only freeze-precursor and keeper-health
+watcher — was a CRE-era Go workflow and has been **removed** rather than
+carried along unmigrated: it was the last thing keeping a Go toolchain, a CRE
+CLI dependency, and a `cre workflow simulate` CI job in a repo that is
+otherwise pure AssemblyScript. It is recoverable from git history
+(`git log -- freeze-watch/`), and its observability belongs in whatever
+monitoring stack replaces it rather than in the keeper plane.
+
+## Why the split
+
+`MAX_BATCH_SCAN` is the same 25 as `ExitQueue.MAX_LIVE_PRICED_BATCHES`.
+`priceBatch` will not create a 26th live priced batch. The view peeks up to
+25 skippable ids then scans 25 more, so it already sees a live batch at about
+`cursor+26`. `_execute(ProcessRequests)` still has no window — a deeper claim
+would be accepted — but with W1 as the only performer that depth does not
+show up:
+
+- Every `perform` (including `PriceBatch`) runs `_advanceBatchCursor` (+25
+  skippable). W1 cannot grow a 25-long dead prefix and leave it sitting.
+- If W1 is down, nothing prices, so `currentBatchId` does not grow. The
+  window you already had (≤25 live + unpriced current) just expires in place.
+- A live batch the view cannot see needs another `KEEPER_ROLE` to keep
+  pricing while this cursor is frozen, and the first live id past ~`cursor+50`.
+- `maxBatches` default 250: a truncated scan needs `current - cursor ≥ 250`.
+  The spec forces it with `maxBatches: 2`.
+- Shorter `ProcessRequests` prefixes: W1 uses the same affordability walk as
+  the view (`maxUsersPerUpkeep`, default 20). `maxRequestsPerBatch` defaults
+  to 50 (looser). The `intended-improvement` shorter-prefix class is for a
+  view that reports a larger count; the spec mocks that. Ops would only see
+  it if `maxRequestsPerBatch < maxUsersPerUpkeep` or the oracle balance is
+  below the view's `address(controller).balance`.
+
+W2's decisions are all bounded re-derivations — a "truer" off-chain number
+would revert — so `checker()` stays authoritative and the function only
+relays its `execPayload` verbatim.
+
+Both executors authenticate the same way: Mimic calls `perform()` from a
+smart account that must be in the executor's `allowExecutorCaller` allowlist
+(the same address as the function input `smartAccount`). An empty allowlist
+means `perform()` always reverts (`KeeperExecutorNoAllowedCallers`) — the
+executors deploy inert. Look the account up in the Mimic app **before**
+creating a live trigger; see [`docs/MIMIC_CUTOVER.md`](docs/MIMIC_CUTOVER.md).
 
 ## Prerequisites
 
-- **Go** `1.25.3+` (`go version`)
-- **CRE CLI** (documented against **v1.29.0**; newer is fine)
-- **CRE account** in the EverStrat org ([create / join](https://docs.chain.link/cre/account))
-- Optional for local simulate: any EOA private key in `.env` (Sepolia ETH only needed once you broadcast / write onchain)
+- **Node** `20+`
+- A [Mimic](https://mimic.fi) account, funded
 
-### Install CRE CLI (macOS / Linux)
+## Local checks
 
 ```bash
-curl -sSL https://app.chain.link/cre/install.sh | bash
-cre version
+make install   # npm install in both functions
+make check     # lint + compile + specs for both functions
+make test      # compile + specs only
+
+# Or directly:
+cd mimic-functions/queue-keeper
+npm install
+npm test
 ```
 
-Manual install: download the matching asset from [cre-cli releases](https://github.com/smartcontractkit/cre-cli/releases), verify SHA-256, rename to `cre`, and put it on your `PATH`. Details: [CLI installation](https://docs.chain.link/cre/getting-started/cli-installation/macos-linux).
+## Deploying W1 (queue-keeper function)
 
-### Authenticate
+The full sequence — task creation, signer discovery, allowlist binding, and
+verification — is the runbook: [`docs/MIMIC_CUTOVER.md`](docs/MIMIC_CUTOVER.md).
 
-```bash
-cre login
-cre whoami
-```
+Short version:
 
-CI / headless: set `CRE_API_KEY` (Organization → APIs in the CRE UI; requires deploy Early Access). See [Authentication](https://docs.chain.link/cre/reference/cli/authentication).
+1. Deploy the executors (`DeployKeeperExecutors` in
+   `everstrat-xyz/contracts`) — they come up **inert** (no allowed callers).
+2. In the Mimic app, copy the smart account for this chain. Put it in
+   `.env` / the trigger input `smartAccount`.
+3. `mimic deploy` the `queue-keeper` function and create its task with that
+   address already filled (time-based trigger). `mimic deploy` only publishes
+   WASM; it does not load `.env`.
+4. `allowExecutorCaller` of **the same address** on `QueueKeeperExecutor`
+   (ADMIN_ROLE).
+5. Verify: the run log shows `divergence=match`, and a dry `perform()`
+   from that signer succeeds. `intended-improvement` / `truncated-scan`
+   are explained classes, not the default W1-only path (see "Why the
+   split").
 
-### Confirm org enablement (required once)
-
-Authoritative chain + mock-forwarder list for **your** tenant:
-
-```bash
-cre workflow supported-chains
-cre workflow supported-chains --output json   # scripting
-cre account access                            # deploy Early Access status
-cre registry list                             # private vs onchain registries
-```
-
-If `supported-chains` fails, the org is not enabled for workflows yet — fix that before implementing W1/W2.
-
-## KeystoneForwarder addresses
-
-Re-verified from the [Forwarder Directory](https://docs.chain.link/cre/guides/workflow/using-evm-client/forwarder-directory-go) (docs last updated **2026-06-24**). **Do not trust stale tables** — re-check the directory and `cre workflow supported-chains` before deploying receivers.
-
-| Network | CRE chain name | Production `KeystoneForwarder` | Simulation `MockKeystoneForwarder` |
-| --- | --- | --- | --- |
-| Ethereum Sepolia | `ethereum-testnet-sepolia` | `0xF8344CFd5c43616a4366C34E3EEE75af79a74482` | `0xF8344CFd5c43616a4366C34E3EEE75af79a74482` |
-| Ethereum Mainnet | `ethereum-mainnet` | `0x0b93082D9b3C7C97fAcd250082899BAcf3af3885` | `0x0b93082D9b3C7C97fAcd250082899BAcf3af3885` |
-
-CCIP chain selectors used in workflow config / `CREReceiverBase`:
-
-| Network | `chainSelector` (decimal string) |
-| --- | --- |
-| Ethereum Sepolia | `16015286601757825753` |
-| Ethereum Mainnet | `5009297550715157269` |
-
-Pass the **production** forwarder into `CREQueueExecutor` / `CREStrategyExecutor` constructors (`KEYSTONE_FORWARDER` in contracts deploy scripts). Simulation consumers that validate `msg.sender` against a forwarder must use the mock address from `supported-chains` for that tenant.
-
-Both tables are compiled into [`pkg/chains`](pkg/chains/chains.go) and pinned by unit tests, so a config that names a chain gets the right selector and forwarder without retyping them. Keep the two in sync when the directory changes.
-
-> Older samples sometimes cite Sepolia mock `0x15fC6ae953E024d975e77382eEeC56A9101f9F88`. That address is **not** what the current Forwarder Directory lists for Sepolia — treat it as stale unless your org’s `supported-chains` output says otherwise.
-
-## Fresh clone → first simulate
-
-```bash
-git clone https://github.com/everstrat-xyz/keepers.git
-cd keepers
-
-# Tooling
-go version   # >= 1.25.3
-cre version
-cre login && cre whoami
-cre workflow supported-chains
-
-# Config
-cp .env.example .env
-# set CRE_ETH_PRIVATE_KEY (64 hex chars, no 0x) and SEPOLIA_RPC_URL
-
-go mod tidy
-
-# Scaffold ticks (no writeReport yet)
-cre workflow simulate queue-keeper --target staging-settings --trigger-index 0
-cre workflow simulate strategy-keeper --target staging-settings --trigger-index 0
-```
-
-Point configs at deployed contracts by editing `queue-keeper/config.*.json` and `strategy-keeper/config.*.json`:
-
-- `registryAddress` — EverStrat `Registry` proxy
-- `queueExecutorAddress` — `CREQueueExecutor`
-- `strategyExecutorAddress` — `CREStrategyExecutor`
-- keep `shadowMode: true` until the Sepolia cutover issue enables `writeReport`
-
-## Funding & spend model
-
-CRE workflow **execution** is metered in **credits** (see Total Workflow Spend / Credits Used in the [CRE workflows UI](https://app.chain.link/cre/workflows)). Monitor spend after deploy; W4 will alert on low balance / silent stop.
-
-Separately you may need gas:
-
-| What | Funding |
-| --- | --- |
-| Local `cre workflow simulate` | Private key in `.env` (no gas if not broadcasting) |
-| Deploy / lifecycle on **private** registry | CRE session only — no ETH for registry ops |
-| Deploy / lifecycle on **onchain** registry (`onchain:ethereum-mainnet`) | Linked key (`cre account link-key`) + **ETH on Ethereum Mainnet** for Workflow Registry txs |
-| Onchain `writeReport` delivery | DON path via KeystoneForwarder; consumer contracts must already be deployed and bound |
-
-Historical Automation used LINK upkeep balances; CRE’s UI bills **credits**. Keep the org funded/credited before relying on live keepers.
-
-## Secrets
-
-1. Declare names in `secrets.yaml` (`secretsNames`).
-2. For simulation: put values in `.env` / the environment.
-3. For deployed workflows: `cre secrets create|update|list|delete` against the Vault DON.
-
-Workflow code uses `runtime.GetSecret()` either way. See [Managing Secrets](https://docs.chain.link/cre/guides/workflow/secrets).
-
-## Deploy (shadow / private registry)
-
-Default `workflow.yaml` targets use `deployment-registry: "private"` (no linked wallet / Mainnet gas for registry ops).
-
-```bash
-cre workflow deploy queue-keeper --target staging-settings
-cre workflow deploy strategy-keeper --target staging-settings
-
-cre workflow get queue-keeper --target staging-settings
-cre workflow pause queue-keeper --target staging-settings   # as needed
-cre workflow activate queue-keeper --target staging-settings
-```
-
-Onchain registry + identity binding for live `writeReport` are covered by the Sepolia cutover issue — leave `shadowMode: true` until then.
+W2 deploys the same way: `mimic deploy` the `strategy-keeper` function,
+create its task with the same smart-account input, allowlist that signer.
 
 ## Repo layout
 
 ```text
-.
-├── project.yaml           # RPC targets (local / staging / production)
-├── secrets.yaml           # Secret name → env var map
-├── .env.example
-├── go.mod                 # Single module for all workflows
-├── Makefile               # make check = vet + test + wasip1 build
-├── docs/
-│   ├── envelope.md        # Envelope rules W1/W2 must obey
-│   ├── READ_BUDGET.md     # CRE's 15-read limit and how W1/W2 fit it
-│   └── LOCAL_FORK.md      # Run a workflow against a real deployment
-├── scripts/                # Solidity-derived fixture generators
-│                           #   (cast / chisel produce the golden values)
-├── contracts/evm/src/
-│   ├── abi/               # Vendored ABIs + Go accessors (see SOURCE.md)
-│   └── keystone/          # Keystone-related artifacts
-├── pkg/
-│   ├── envelope/          # abi.encode(Envelope) codec + staleness guards
-│   ├── queue/             # W1 actions + params (no amounts)
-│   ├── strategy/          # W2 actions (action-only reports)
-│   ├── keystone/          # Workflow-identity metadata helpers
-│   ├── solmath/           # Mirrors of the contracts' Math library
-│   ├── evmread/           # CRE reads: ABI, Multicall3 batching, read budget
-│   ├── crewrite/          # DON-signed writeReport delivery
-│   ├── chains/            # Per-chain constants + config validation
-│   ├── registry/          # Registry keys and role identifiers
-│   └── freezewatch/       # W4 alert thresholds and payloads
-├── queue-keeper/          # W1 — implemented, shadow mode
-├── strategy-keeper/       # W2 — implemented, shadow mode
-└── freeze-watch/          # W4 — observability only, no writes
+├── mimic-functions/
+│   ├── queue-keeper/       # W1 — off-chain decide (AssemblyScript)
+│   │   ├── src/function.ts # tick: read state, decide, emit intent
+│   │   ├── src/decide.ts   # decision engine (pure)
+│   │   ├── src/params.ts   # payload encoder — batch id + index range only
+│   │   └── tests/          # raw-mock oracle harness + scenario specs
+│   ├── strategy-keeper/    # W2 — checker() relay, payload forwarded verbatim
+│   │   ├── src/function.ts # tick: read checker(), relay execPayload
+│   │   └── tests/
+│   └── ABIS.md             # Vendored-ABI provenance and refresh recipe
+├── docs/MIMIC_CUTOVER.md   # The cutover runbook
+└── blueprints/             # Design notes (01 — system overview)
 ```
 
 ## The address book
 
-`pkg/registry` is the one place to get a contract address or its ABI, mirroring
-how nothing on-chain stores its peers' addresses — it holds the Registry and
-asks it. Only `registryAddress` is configured; everything else is derived.
+Protocol addresses are **function inputs**, declared in each `manifest.yaml`:
+W1 takes the executor, Controller, ExitQueue and AMM; W2 takes the executor.
+Both also take the Mimic smart account that will call `perform()`.
 
-```go
-p, err := registry.Resolve(caller, registryAddress,
-    registry.Controller, registry.ExitQueue, registry.AMM)
+The AMM is there for one reason — its pause flag. `queueUpkeepStatus` refuses
+to recommend work while the AMM is paused, and W1 has to refuse for the same
+reason: `Controller.priceBatch` is `whenNotPaused` on the Controller alone, so
+an AMM-only pause would not stop the transaction.
 
-exitQueue, _ := p.ExitQueue()
-calls := []evmread.SubCall{
-    exitQueue.Sub("currentBatchId"),   // address and ABI travel together
-    exitQueue.Paused(),                // Pausable is inherited, so it has its own builder
-}
-```
+Because the addresses are inputs rather than Registry lookups, a redeploy that
+re-registers a contract needs the triggers updated. That is the trade for not
+paying a Registry round-trip per tick against a timelocked address book.
 
-Two properties worth keeping:
+## Hard constraints carried over from the CRE era
 
-- **One chain read** for the whole book, however many keys. Use `ResolveWith`
-  to fold your own independent reads into the same one — against a budget of 15
-  per execution, a spare round trip is expensive.
-- **Address and ABI cannot be mis-paired.** A raw `(address, abiName)` call site
-  can send the ExitQueue's address the Controller's selectors; the call then
-  reverts somewhere far from the mistake. A `Contract` carries both.
+**A payload must never carry an authoritative amount.** No ETH amount, NAV, or
+price — params are claims and hints only. The executors re-derive everything
+from live state; the discipline exists so a future edit cannot start trusting a
+value it should verify:
 
-The key → ABI mapping is asserted once, in `TestBoundABIsAreVendoredAndUsable`,
-rather than re-derived at each call site.
+- W1 params are a batch id and an index range, nothing else
+  (`mimic-functions/queue-keeper/src/params.ts`).
+- `decode()` enforces the **exact** wire length per action, because all
+  layouts are static and a smuggled amount can only appear as a trailing word
+  that Solidity's `abi.decode` would silently ignore. `function.ts` runs it
+  over the bytes it is about to send, so the rule holds on every tick rather
+  than only in tests.
 
-## Shared packages
+**The tick clock is seconds, not milliseconds.** `createdAt` / `pricedAt` are
+`block.timestamp`. W1's `state.now` is Mimic's `context.timestamp` (ms) divided
+by 1000 (`function.ts` → `readState`). Forgetting the division skews every
+window by 1000×. That context is the runner's execution time, not
+`eth_getBlockByNumber` — a small skew vs chain is possible; mixing units is
+the failure mode that is not.
 
-Both workflows encode reports through the same code, so W1 and W2 cannot drift
-from each other or from `CREReceiverBase`.
+**W1 may scan deeper than the contract; W2 may not.** `_execute(ProcessRequests)`
+applies no scan window. With W1 as the only performer that depth does not
+show up (every `perform` also peeks +25 skippable; a down W1 does not
+price). W2 must relay because perform uses the same bounded helpers. See
+"Why the split".
 
-| Package | What it gives you |
-| --- | --- |
-| `pkg/envelope` | `abi.encode(Envelope)` codec, plus `Validate` / `NextSequence` / `Deadline` mirroring the receiver's chain, replay and staleness guards |
-| `pkg/queue` | W1's decision engine: affordability model, cursor logic, params encoders, divergence classification |
-| `pkg/strategy` | W2's decision engine: priority order, redemption cost model, action-only `Report.Build` |
-| `pkg/keystone` | Workflow name → `bytes10`, 64-byte metadata encode/decode, and a binding pre-flight check for the cutover |
-| `pkg/chains` | Chain selectors and forwarder addresses, plus `Resolve` to validate a workflow's `config.*.json` |
-| `pkg/registry` | The protocol address book — the Go mirror of `Registry.sol` + `Auth.sol`. Resolves every contract from the Registry in one chain read and binds each address to its ABI |
-| `pkg/solmath` | Transcriptions of the contracts' `Math` library, so off-chain affordability matches on-chain to the wei |
-| `pkg/evmread` | CRE EVM reads with ABI packing, Multicall3 batching, and the read budget |
-| `pkg/crewrite` | DON-signed `writeReport` delivery, shared by W1/W2 |
-| `pkg/freezewatch` | W4's alert evaluation — pure thresholds in, alerts out |
-| `contracts/evm/src/abi` | Vendored contract ABIs, parsed on demand |
+## Testing conventions
 
-**Hard constraint:** a report must never carry an authoritative ETH amount, NAV,
-or price — params are claims and hints only. The APIs above are shaped so that
-is not expressible, and unit tests reject amount-bearing params.
+### Expected calldata comes from ethers, never from the function's encoder
 
-Read [`docs/envelope.md`](docs/envelope.md) and [`docs/READ_BUDGET.md`](docs/READ_BUDGET.md) before writing W1/W2 logic: it
-covers the `sequence`, `observedAt` and `MAX_REPORT_AGE` rules, the
-`ProcessRequests` prefix constraint, and the identity-binding rules.
+A round-trip against our own encoder passes no matter how wrong the layout is.
+The specs build expected calldata with ethers' `Interface` over the executor
+ABI — an independent implementation (`mimic-functions/*/tests/function.spec.ts`).
 
-### Local checks
+### The tests run the real compiled WASM
 
-```bash
-make check      # go vet + go test (host) + wasip1 build (workflows)
-make test
-make fixtures   # regenerate Solidity-derived fixtures (needs Foundry + jq)
-```
+Both functions are exercised through a raw-mock harness
+(`mimic-functions/*/tests/helpers.ts`) that keys oracle responses by the same
+EIP-712 query hash the runner computes, so the compiled function runs
+unmodified. A mock-schema limitation in `@mimicprotocol/test-ts` (no tuple
+returns) is why the harness exists; its `debug` flag lists unmocked reads.
 
-Unit tests cover the decision logic, but only the **local fork harness**
-exercises the EVM read path against a real deployment — see
-[`docs/LOCAL_FORK.md`](docs/LOCAL_FORK.md). It is what caught CRE's 15-read
-limit and the block-timestamp-vs-wall-clock bug; run it before trusting a change
-to `queue-keeper/reads.go`.
+### Contract semantics are transcribed, not reimplemented
 
-```bash
-cre workflow simulate queue-keeper --target local-settings --non-interactive --trigger-index 0
-```
+`src/solmath.ts` mirrors the contracts' `Math` library including truncating
+division and the strict `<` in `isRelativelyLessThan`. The affordability walk
+breaks at the first request that overruns the balance — it does not skip an
+expensive request to fit cheaper ones behind it. "Close enough" produces a
+keeper that proposes work the contract refuses.
 
-Note that `go test ./...` does **not** work from a host toolchain: the workflow
-mains are `//go:build wasip1`, so those directories have no buildable files on
-linux/darwin. Use `./pkg/... ./contracts/...`, as the Makefile and CI do.
+### Enum ordinals are pinned
+
+`Action.None/PriceBatch/ProcessRequests/AdvanceCursor` are 0/1/2/3, matching
+`IQueueKeeperExecutor.QueueAction`. Reordering the Solidity enum without
+updating the constants silently retargets every payload — pinned by the
+specs' exact-calldata assertions.
+
+## CI baseline
+
+GitHub Actions (`.github/workflows/ci.yml`) runs one job, **functions**, as a
+matrix over `queue-keeper` and `strategy-keeper`: `npm ci`, lint, then `npm
+test` — which compiles each function to WASM and runs its specs against that
+artifact.
+
+Nothing here exercises the read path against a real chain. The specs mock the
+oracle, so a signature drift is caught by the vendored ABIs (see
+[`mimic-functions/ABIS.md`](mimic-functions/ABIS.md)) rather than by
+execution. A forked-deployment e2e needs a Mimic runner pointed at an anvil
+fork and is not built yet.
 
 ## Automated PR review
 
 `.github/workflows/claude-code-review.yml` reviews every PR with Claude Code,
-mirroring `everstrat-xyz/contracts`. `.github/workflows/claude.yml` answers
-`@claude` mentions in issues, PR comments and reviews.
-
-The review prompt is aimed at this repo's specific failure modes rather than
-generic code quality — the no-amounts guarantee, CRE's 15-read budget, the
-block-timestamp rule, the W1/W2 scan asymmetry, and Solidity-derived fixtures.
-[`CLAUDE.md`](CLAUDE.md) holds the reasoning behind each, and is the standard
-the reviewer applies.
-
-**Requires `CLAUDE_CODE_OAUTH_TOKEN`** in repository secrets:
-
-```bash
-claude setup-token
-gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo everstrat-xyz/keepers
-```
-
-Without it both workflows skip with a warning annotation and a run-summary note
-saying the PR was **not** reviewed — an unreviewed PR must never look like a
-reviewed one.
-
-To review an existing PR (for example one opened before this landed):
-
-```bash
-gh workflow run claude-code-review.yml --repo everstrat-xyz/keepers -f pr_number=11
-```
-
-## CI baseline
-
-GitHub Actions (`.github/workflows/ci.yml`):
-
-1. **`vet / test / lint`** — module tidy check, `go vet` + `go test -race` on the host packages, a `wasip1` vet + build of all three workflows, a compressed-size check against CRE's 20 MB limit, and `gofmt`.
-2. **`golangci-lint`** — host packages, then a second pass with `GOOS=wasip1` so the workflow mains (the keeper logic most worth linting) are covered at all. Requires **v2**: v1 refuses to run when built with an older Go than the module targets, and v2 binaries need `golangci-lint-action@v7` or newer.
-3. **`cre workflow simulate`** — all three workflows against `staging-settings`, gated on `CRE_API_KEY`.
-
-| Secret | Needed for | If unset |
-| --- | --- | --- |
-| `CRE_API_KEY` | `cre workflow simulate` (the CLI refuses to run unauthenticated) | simulate skips with a **warning annotation and a run-summary note** |
-| `SEPOLIA_RPC_URL` | avoiding public-RPC rate limits | falls back to a public endpoint |
-| ~~`CRE_ETH_PRIVATE_KEY`~~ | nothing | the CLI uses a default key for chain-write simulation |
-
-The original gate watched `CRE_ETH_PRIVATE_KEY` — the wrong secret — and skipped **silently**, so the job reported success while doing nothing. That hid two real bugs at once: no simulate coverage, and a CRE CLI install that had been installing the release tarball as the binary since the scaffold. A skipped job now says so loudly; silence is not the same as green.
-
-### fork-e2e (scheduled / manual)
-
-`.github/workflows/fork-e2e.yml` deploys the protocol to an anvil Sepolia fork and runs every workflow against it, failing on `divergence=bug` or a stale vendored ABI. It is **not** on PRs: it deploys from `everstrat-xyz/contracts`, so it can go red for reasons outside the PR, and a job that does that trains people to ignore red. Run it via `workflow_dispatch` before merging anything that touches a `reads.go`.
-
-Full simulate/lint matrix expansion: [issue #8](https://github.com/everstrat-xyz/keepers/issues/8).
+mirroring `everstrat-xyz/contracts`. The review prompt targets this repo's
+specific failure modes; [`CLAUDE.md`](CLAUDE.md) holds the reasoning and is
+the standard the reviewer applies.
 
 ## Useful links
 
-- [CRE docs](https://docs.chain.link/cre)
-- [Project configuration (Go)](https://docs.chain.link/cre/reference/project-configuration-go)
-- [Forwarder Directory](https://docs.chain.link/cre/guides/workflow/using-evm-client/forwarder-directory-go)
-- [Deploying workflows](https://docs.chain.link/cre/guides/operations/deploying-workflows)
-- Contracts CRE receivers: `CREQueueExecutor`, `CREStrategyExecutor` in `everstrat-xyz/contracts`
+- [Mimic docs](https://mimic.fi) — Protocol App, developer guides
+- Contracts: `QueueKeeperExecutor`, `StrategyKeeperExecutor` in `everstrat-xyz/contracts`

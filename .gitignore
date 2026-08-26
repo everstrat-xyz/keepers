@@ -1,44 +1,15 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
+# Node (Mimic functions)
+node_modules/
 
-# Test binary, built with `go test -c`
-*.test
-
-# Code coverage profiles and other test artifacts
-*.out
-coverage.*
-*.coverprofile
-profile.cov
-
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
-go.work
-go.work.sum
+# Mimic function build artifacts
+mimic-functions/*/build/
+*.wasm
+*.wasm.br
 
 # env / secrets
 .env
 .env.*
-!.env.example
-
-# CRE / WASM build artifacts
-*.wasm
-*.wasm.br
-*.wasm.br.b64
-binary.wasm*
-.cre/
-
-# Scratch worktree used when refreshing vendored ABIs (see
-# contracts/evm/src/abi/SOURCE.md) — never commit it.
-.vendor-tmp/
+mimic-functions/*/scripts/.env
 
 # Editor/IDE
 # .idea/

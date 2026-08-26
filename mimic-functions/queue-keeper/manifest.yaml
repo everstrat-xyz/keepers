@@ -1,0 +1,19 @@
+version: 1.0.0
+name: EverStrat Queue Keeper
+description: >
+  W1 queue keeper for the EverStrat redemption queue. Decides off-chain
+  and emits a perform(action, params) EvmCall intent when work exists.
+inputs:
+  - chainId: uint32
+  - amm: address
+  - executor: address
+  - controller: address
+  - exitQueue: address
+  - smartAccount: address
+  - maxBatches: uint32
+  - maxRequestsPerBatch: uint32
+  - maxFee: string
+abis:
+  - QueueKeeperExecutor: ./abis/QueueKeeperExecutor.json
+  - IExitQueue: ./abis/IExitQueue.json
+  - Pausable: ./abis/Pausable.json

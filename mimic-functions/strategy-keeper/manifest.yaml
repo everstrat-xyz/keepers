@@ -1,0 +1,14 @@
+version: 1.0.0
+name: EverStrat Strategy Keeper
+description: >
+  W2 checker relay for the EverStrat strategy executor. Reads
+  StrategyKeeperExecutor.checker() via an oracle query and forwards
+  execPayload verbatim as a perform EvmCall intent. All decision logic
+  stays on-chain; this function only relays.
+inputs:
+  - chainId: uint32
+  - executor: address
+  - smartAccount: address
+  - maxFee: string
+abis:
+  - StrategyKeeperExecutor: ./abis/StrategyKeeperExecutor.json
