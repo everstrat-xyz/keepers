@@ -5,7 +5,7 @@
  * The engine decides what `QueueKeeperExecutor.perform` should be called with,
  * and the params surface here stays closed: the only expressible values are a
  * batch id and an index range. There is no path to put an ETH amount, NAV, or
- * price into a W1 payload, and `decodeParams` rejects any blob longer than the
+ * price into a W1 payload, and `decode` rejects any blob longer than the
  * action's exact encoding — which is what an appended amount word would look
  * like on the wire. The executor re-derives everything from live state anyway;
  * the discipline exists so a future edit cannot smuggle an authoritative value
@@ -14,7 +14,7 @@
 
 import { BigInt } from '@mimicprotocol/lib-ts'
 
-import { convertAssets, isRelativelyLessThan } from './solmath'
+import { convertAssets, isRelativelyLessThan, isValidRelativeDifference } from './solmath'
 
 /**
  * `QueueKeeperExecutor.MAX_BATCH_SCAN` — the gas bound on the on-chain
@@ -239,6 +239,13 @@ export function affordableRequests(s: State, id: BigInt): BigInt {
   let cumulative = BigInt.zero()
   let count = BigInt.zero()
   for (let i = BigInt.zero(); i < limit; i = i.plus(BigInt.fromI32(1))) {
+    // A tolerance the contract would revert on makes the executor's own
+    // _affordableRequests revert too, so every ProcessRequests claim on this
+    // batch would fail on arrival. Report the batch as unaffordable rather
+    // than pricing the request as if it were fine — the Go original raised an
+    // error here and the tick declined to act; this is the same refusal
+    // expressed in a language with no error channel.
+    if (!isValidRelativeDifference(b.requests[i.toI32()].priceTolerance)) return BigInt.zero()
     const cost = requestCost(b.finalEvePrice, b.requests[i.toI32()])
     const next = cumulative.plus(cost)
     if (next > s.controllerBalance) break
@@ -253,6 +260,9 @@ export function affordableRequests(s: State, id: BigInt): BigInt {
  * `Controller._processRequest`. A request whose batch price fell more than the
  * user's tolerance below their queued price is closed at zero cost — it
  * consumes a slot but no ETH.
+ *
+ * Callers must have checked `isValidRelativeDifference(r.priceTolerance)`
+ * first; see affordableRequests.
  */
 export function requestCost(finalEvePrice: BigInt, r: Request): BigInt {
   if (isRelativelyLessThan(finalEvePrice, r.evePriceAtRequestTime, r.priceTolerance)) {

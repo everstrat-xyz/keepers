@@ -48,6 +48,7 @@ deployment chain. Configure the function inputs:
 
 ```json
 {
+  "chainId": 10,
   "executor": "0x…",
   "smartAccount": "<assigned below, then update>",
   "maxFee": "1"
@@ -96,8 +97,10 @@ Watch one full poll cycle before declaring W2 live.
 ```json
 {
   "chainId": 10,
-  "registry": "0x…",
   "executor": "0x…",
+  "controller": "0x…",
+  "exitQueue": "0x…",
+  "amm": "0x…",
   "smartAccount": "0x…",
   "maxBatches": 250,
   "maxRequestsPerBatch": 50,
@@ -105,10 +108,18 @@ Watch one full poll cycle before declaring W2 live.
 }
 ```
 
-`maxBatches` caps the off-chain scan width per tick. Protocol addresses
-(controller/exitQueue) are resolved from the Registry at every tick where
-possible; the exit-queue address is an input because W1 reads it before the
-registry is consulted.
+Every key above is required by `manifest.yaml`; a missing one fails manifest
+validation when the trigger is created. `scripts/create-trigger.ts` builds the
+same set from `scripts/.env` (see `scripts/env.template`).
+
+`maxBatches` caps the off-chain scan width per tick. Protocol addresses are
+passed in rather than resolved from the Registry — W1 reads them before
+anything else, and a per-tick Registry round-trip buys nothing while the
+address book is timelocked. The **AMM** address is needed only for its pause
+flag: `_queueUpkeepStatus` refuses to recommend work while the AMM is paused,
+and W1 has to refuse for the same reason (`Controller.priceBatch` is
+`whenNotPaused` on the Controller alone, so an AMM-only pause would not stop
+the transaction).
 
 ### 2.2 Test locally first
 
@@ -119,8 +130,10 @@ npm test
 ```
 
 `tests/function.spec.ts` runs the compiled WASM through a raw-mock oracle
-harness; passing there means the decision engine, encoder, and read layer all
-agree on seven scenarios including the truncated-scan and divergence paths.
+harness: nine scenarios (the four pause paths, price/process/advance,
+truncated-scan, no-work) plus a `divergence cross-check` block asserting the
+`match` / `intended-improvement` / `bug` classification against a mocked
+`queueUpkeepStatus`.
 
 ### 2.3 Deploy the function and create the task
 

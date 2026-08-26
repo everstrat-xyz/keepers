@@ -13,7 +13,9 @@
  * and an index range. `encode` rejects any builder call that would smuggle an
  * ETH amount, NAV, or price into a payload — and `decode` rejects any blob
  * longer than the action's exact encoding, which is what an appended amount
- * word would look like on the wire.
+ * word would look like on the wire. The function runs `decode` over its own
+ * emitted bytes before sending, so that rule is enforced on every tick rather
+ * than only in tests.
  */
 
 import { BigInt } from '@mimicprotocol/lib-ts'
@@ -136,6 +138,21 @@ export function encode(action: u8, params: Params): Uint8Array {
 }
 
 /**
+ * Reads the i-th 32-byte word as a big-endian uint256.
+ *
+ * A captured lambda inside decode() would be nicer, but AssemblyScript has no
+ * closures (AS100) — which is also why this never compiled while decode() was
+ * unreachable from main().
+ */
+function readWord(params: Uint8Array, i: i32): BigInt {
+  let v = BigInt.zero()
+  for (let b = 0; b < 32; b++) {
+    v = v.times(BigInt.fromI32(256)).plus(BigInt.fromU8(params[i * 32 + b]))
+  }
+  return v
+}
+
+/**
  * Parses params for an action and enforces the exact wire length.
  *
  * The length check is the "no smuggled amounts" guard: all three layouts are
@@ -156,18 +173,10 @@ export function decode(action: u8, params: Uint8Array): Params {
     throw new Error(msg)
   }
 
-  const readWord = (i: i32): BigInt => {
-    let v = BigInt.zero()
-    for (let b = 0; b < 32; b++) {
-      v = v.times(BigInt.fromI32(256)).plus(BigInt.fromU8(params[i * 32 + b]))
-    }
-    return v
-  }
-
-  const out = new Params(action, readWord(0), BigInt.zero(), BigInt.zero())
+  const out = new Params(action, readWord(params, 0), BigInt.zero(), BigInt.zero())
   if (action == ActionProcessRequests) {
-    out.startIndex = readWord(1)
-    out.endIndex = readWord(2)
+    out.startIndex = readWord(params, 1)
+    out.endIndex = readWord(params, 2)
     requireStartIndexZero(out.startIndex)
     requireNonEmptyRange(out.startIndex, out.endIndex)
   }

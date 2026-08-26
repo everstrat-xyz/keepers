@@ -6,7 +6,7 @@
  * and either emit a perform EvmCall intent executed from the operator's smart
  * account, or emit nothing.
  *
- * Ported from the CRE-era Go workflow and the Gelato W3F. What changed:
+ * Ported from the CRE-era Go workflow. What changed:
  * no DON report, no envelope, no 15-read budget (the scan is still bounded by
  * inputs.maxBatches so a long stall cannot produce an unbounded tick), and
  * reads now go through oracle-signed EvmCall queries. What did not change:
@@ -22,7 +22,8 @@ import { Pausable } from './types/Pausable'
 import { QueueKeeperExecutor } from './types/QueueKeeperExecutor'
 import { ActionNone, Batch, decide, Request, requestCost, State } from './decide'
 import { classify, unexplained, UpkeepStatus } from './divergence'
-import { encode, Params } from './params'
+import { decode, encode, Params } from './params'
+import { isValidRelativeDifference } from './solmath'
 import { inputs } from './types'
 
 export default function main(): void {
@@ -74,6 +75,12 @@ export default function main(): void {
     new Params(decision.action, decision.batchId, BigInt.zero(), decision.endIndex)
   )
 
+  // Re-read the bytes we are about to send. decode()'s exact-wire-length rule
+  // is the "no smuggled amounts" guard (CLAUDE.md §1), and a guard that only
+  // ever runs over test fixtures is decorative — this runs it over the real
+  // payload. A mismatch aborts the tick instead of submitting the intent.
+  decode(decision.action, paramsBytes)
+
   const fee = TokenAmount.fromStringDecimal(DenominationToken.USD(), inputs.maxFee)
 
   executor.perform(decision.action, Bytes.fromUint8Array(paramsBytes)).addUser(inputs.smartAccount).build().send(fee)
@@ -88,9 +95,9 @@ function actionName(a: u8): string {
 }
 
 /**
- * Reads the full decision snapshot. Mirrors the Gelato-era readState, phase
- * for phase: config reads, then a batchInfo/unprocessedUsersCount walk, then
- * user lists and requestInfo for the first batch with an affordable prefix.
+ * Reads the full decision snapshot, phase for phase: pause fan-out, config
+ * reads, a batchInfo/unprocessedUsersCount walk, then user lists and
+ * requestInfo for the first batch with an affordable prefix.
  */
 function readState(executor: QueueKeeperExecutor, exitQueue: IExitQueue, controller: Pausable): State {
   const context = environment.getContext()
@@ -102,12 +109,18 @@ function readState(executor: QueueKeeperExecutor, exitQueue: IExitQueue, control
   const maxBatches = inputs.maxBatches > 0 ? inputs.maxBatches : 250
   const maxRequests = inputs.maxRequestsPerBatch > 0 ? inputs.maxRequestsPerBatch : 50
 
-  // Pause fan-out: the executor plus the contracts it drives. unwrapOr(true)
+  // Pause fan-out: the executor plus every contract `_queueUpkeepStatus` gates
+  // on — Controller, ExitQueue AND AMM. The AMM belongs here even though W1
+  // never calls it: `Controller.priceBatch` is `whenNotPaused` on the
+  // Controller only and `AMM.eveBasePriceInETH()` is an ungated view, so a
+  // PriceBatch proposed during an AMM-only pause would *succeed* — pricing a
+  // batch the on-chain view deliberately refuses to recommend. unwrapOr(true)
   // treats an unreadable pause flag as paused — fail closed.
   const executorPaused = executor.paused().unwrapOr(true)
   const controllerPaused = controller.paused().unwrapOr(true)
   const exitQueuePaused = new Pausable(inputs.exitQueue, inputs.chainId).paused().unwrapOr(true)
-  const paused = executorPaused || controllerPaused || exitQueuePaused
+  const ammPaused = new Pausable(inputs.amm, inputs.chainId).paused().unwrapOr(true)
+  const paused = executorPaused || controllerPaused || exitQueuePaused || ammPaused
 
   // A paused protocol means every action reverts — do not read anything else.
   if (paused) {
@@ -228,6 +241,12 @@ function readState(executor: QueueKeeperExecutor, exitQueue: IExitQueue, control
     let cumulative = BigInt.zero()
     let affordable = BigInt.zero()
     for (let q = 0; q < requests.length; q++) {
+      // Same guard decide's affordableRequests applies: a tolerance the
+      // contract would revert on makes the whole batch unclaimable.
+      if (!isValidRelativeDifference(requests[q].priceTolerance)) {
+        affordable = BigInt.zero()
+        break
+      }
       const cost = requestCost(b.finalEvePrice, requests[q])
       if (cumulative.plus(cost) > state.controllerBalance) break
       cumulative = cumulative.plus(cost)

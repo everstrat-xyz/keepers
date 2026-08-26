@@ -1,8 +1,14 @@
 name: fork-e2e
 
-# Runs the workflows against a real protocol deployment on an anvil fork of
-# Sepolia — the only thing that exercises the EVM read path end to end before
-# the cutover. See docs/LOCAL_FORK.md.
+# Runs freeze-watch (W4) against a real protocol deployment on an anvil fork of
+# Sepolia. See docs/LOCAL_FORK.md.
+#
+# SCOPE: W4 only. W1/W2 moved to Mimic functions, and their read layers are
+# covered by `npm test` in mimic-functions/*/ (compiled WASM against a raw-mock
+# oracle) — NOT by this job. A forked-deployment e2e for the Mimic read path
+# needs a Mimic runner pointed at the fork and is not built yet; until it is,
+# nothing here exercises mimic-functions/queue-keeper/src/function.ts against a
+# real chain.
 #
 # Deliberately NOT on every PR:
 #   - it deploys from everstrat-xyz/contracts, so a green run depends on that
@@ -11,7 +17,7 @@ name: fork-e2e
 #
 # A job that fails for reasons outside the PR trains people to ignore red, so
 # this is scheduled and manually dispatchable instead. Run it before merging
-# anything that touches a reads.go.
+# anything that touches freeze-watch/reads.go.
 
 on:
   workflow_dispatch:
@@ -19,7 +25,7 @@ on:
       contracts_ref:
         description: "everstrat-xyz/contracts ref to deploy"
         required: false
-        default: "feat/mimic-keeper-executors"
+        default: "main"
   schedule:
     # 06:00 UTC daily.
     - cron: "0 6 * * *"
@@ -45,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: everstrat-xyz/contracts
-          ref: ${{ inputs.contracts_ref || 'feat/mimic-keeper-executors' }}
+          ref: ${{ inputs.contracts_ref || 'main' }}
           submodules: recursive
           path: contracts
 

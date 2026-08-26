@@ -24,6 +24,7 @@ const chainId = 10
 const EXECUTOR = '0x0000000000000000000000000000000000000100'
 const EXIT_QUEUE = '0x0000000000000000000000000000000000000200'
 const CONTROLLER = '0x0000000000000000000000000000000000000300'
+const AMM = '0x0000000000000000000000000000000000000350'
 const SMART_ACCOUNT = '0x0000000000000000000000000000000000000400'
 const USER_A = '0x0000000000000000000000000000000000000aa1'
 const USER_B = '0x0000000000000000000000000000000000000aa2'
@@ -56,7 +57,7 @@ function contextAt(now: number): Context {
 
 const inputs = {
   chainId,
-  registry: EXECUTOR,
+  amm: AMM,
   executor: EXECUTOR,
   controller: CONTROLLER,
   exitQueue: EXIT_QUEUE,
@@ -70,10 +71,13 @@ function call(to: string, selector: string, args: unknown[] = []): string {
   return selector + (args.length ? Coder.encode(Array(args.length).fill('uint256'), args).slice(2) : '')
 }
 
-const pausedReads = (executor: boolean, controller: boolean, exitQueue: boolean): RawMock[] => [
+// The pause fan-out mirrors QueueKeeperExecutor._queueUpkeepStatus: executor,
+// Controller, ExitQueue AND AMM.
+const pausedReads = (executor: boolean, controller: boolean, exitQueue: boolean, amm = false): RawMock[] => [
   mockPrimitive(EXECUTOR, SEL.paused, executor, 'bool'),
   mockPrimitive(CONTROLLER, SEL.paused, controller, 'bool'),
   mockPrimitive(EXIT_QUEUE, SEL.paused, exitQueue, 'bool'),
+  mockPrimitive(AMM, SEL.paused, amm, 'bool'),
 ]
 
 const configReads = (o: {
@@ -131,6 +135,25 @@ describe('Queue keeper (W1)', () => {
   it('emits nothing when the controller is paused', async () => {
     const context = contextAt(Date.now())
     const result = await runWithRawMocks(functionDir, context, inputs, [...pausedReads(false, true, false)])
+    expect(result.success).to.be.true
+    expect(result.intents).to.have.lengthOf(0)
+  })
+
+  it('emits nothing when the exit queue is paused', async () => {
+    const context = contextAt(Date.now())
+    const result = await runWithRawMocks(functionDir, context, inputs, [...pausedReads(false, false, true)])
+    expect(result.success).to.be.true
+    expect(result.intents).to.have.lengthOf(0)
+  })
+
+  // Regression: the AMM is in _queueUpkeepStatus's pause fan-out, and skipping
+  // it here is not a wasted tick. Controller.priceBatch is whenNotPaused on the
+  // Controller only and AMM.eveBasePriceInETH() is an ungated view, so a
+  // PriceBatch proposed during an AMM-only pause would land — pricing a batch
+  // the on-chain view refuses to recommend.
+  it('emits nothing when only the AMM is paused', async () => {
+    const context = contextAt(Date.now())
+    const result = await runWithRawMocks(functionDir, context, inputs, [...pausedReads(false, false, false, true)])
     expect(result.success).to.be.true
     expect(result.intents).to.have.lengthOf(0)
   })
@@ -338,5 +361,69 @@ describe('Queue keeper (W1)', () => {
     const result = await runWithRawMocks(functionDir, context, inputs, mocks)
     expect(result.success).to.be.true
     expect(result.intents).to.have.lengthOf(0)
+  })
+
+  // The cross-check against queueUpkeepStatus is shadow mode's exit criterion
+  // ("zero unexplained divergences"), so the classification gets its own specs
+  // rather than being exercised silently by the scenarios above.
+  describe('divergence cross-check', () => {
+    const price = '2000000000000000000000' // 2000e18 EVE/ETH
+    const reqCost = (tokens: string): bigint => (BigInt(tokens) * BigInt(price)) / BigInt(10 ** 18)
+
+    // Batch 1 holds two equally-priced requests and the Controller balance
+    // covers exactly one, so decide always claims a one-request prefix. Only
+    // the on-chain view's answer changes between the cases below.
+    const oneAffordableOfTwo = (status: RawMock): RawMock[] => {
+      const nowSec = Math.floor(Date.now() / 1000)
+      const day = 86400
+      return [
+        ...pausedReads(false, false, false),
+        ...configReads({
+          currentBatchId: '2',
+          maxProcessing: '259200',
+          cursor: '1',
+          minBatchAge: '86400',
+          maxUsers: '20',
+          balance: reqCost('1000000000000000000').toString(),
+        }),
+        batchInfoMock('1', [true, price, '2000000000000000000', String(nowSec - day), String(nowSec - day)]),
+        unprocessedCountMock('1', '2'),
+        unprocessedUsersMock('1', '2', [USER_A, USER_B]),
+        requestInfoMock('1', USER_A, [false, false, price, '1000000000000000000', '50000000000000000']),
+        requestInfoMock('1', USER_B, [false, false, price, '1000000000000000000', '50000000000000000']),
+        batchInfoMock('2', [true, '0', '0', String(nowSec), '0']),
+        unprocessedCountMock('2', '0'),
+        status,
+      ]
+    }
+
+    const runAgainstView = async (action: number, batchId: string, count: string): Promise<string> => {
+      const result = await runWithRawMocks(
+        functionDir,
+        contextAt(Date.now()),
+        inputs,
+        oneAffordableOfTwo(queueUpkeepStatusMock(action, batchId, count))
+      )
+      expect(result.success).to.be.true
+      // Classification never suppresses the decision — the intent goes out
+      // either way, and the class is what ops reads.
+      expect(result.intents).to.have.lengthOf(1)
+      return JSON.stringify(result.logs)
+    }
+
+    it('reports match when the view names the same batch and prefix', async () => {
+      expect(await runAgainstView(2, '1', '1')).to.include('divergence=match')
+    })
+
+    it('reports intended-improvement when it claims a shorter prefix than the view', async () => {
+      const logs = await runAgainstView(2, '1', '2')
+      expect(logs).to.include('divergence=intended-improvement')
+    })
+
+    it('reports bug when the view cannot support the claimed prefix', async () => {
+      const logs = await runAgainstView(2, '1', '0')
+      expect(logs).to.include('divergence=bug')
+      expect(logs).to.include('W1 divergence from on-chain view is unexplained')
+    })
   })
 })

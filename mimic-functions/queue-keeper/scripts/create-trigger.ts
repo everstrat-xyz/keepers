@@ -4,12 +4,15 @@ import { config } from 'dotenv'
 // Fill in after `yarn mimic deploy` prints the function CID.
 const FUNCTION_CID = 'YOUR_FUNCTION_CID_HERE'
 
+// Every key here is required by manifest.yaml — a missing one fails manifest
+// validation at trigger creation, not at run time.
 const inputs = {
   chainId: Number(process.env.CHAIN_ID),
-  registry: process.env.REGISTRY_ADDRESS!,
+  amm: process.env.AMM_ADDRESS!,
   executor: process.env.QUEUE_EXECUTOR_ADDRESS!,
   controller: process.env.CONTROLLER_ADDRESS!,
   exitQueue: process.env.EXIT_QUEUE_ADDRESS!,
+  smartAccount: process.env.SMART_ACCOUNT_ADDRESS!,
   maxBatches: Number(process.env.MAX_BATCHES ?? 250),
   maxRequestsPerBatch: Number(process.env.MAX_REQUESTS_PER_BATCH ?? 50),
   maxFee: process.env.MAX_FEE ?? '1',

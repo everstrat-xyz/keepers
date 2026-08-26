@@ -24,6 +24,21 @@ export function convertAssets(normalizedAmount: BigInt, normalizedPrice: BigInt)
 }
 
 /**
+ * Whether `difference` is in the range Math.isRelativelyLessThan accepts.
+ *
+ * The Solidity version reverts (`MathInvalidRelativeDifference`) above
+ * SCALE_FACTOR, and AssemblyScript gives this module no error channel to
+ * mirror that with. So the check is exported instead: callers must ask before
+ * pricing a request, and degrade to "no upkeep" — see decide.affordableRequests.
+ *
+ * `AMM.exit` rejects a tolerance above SCALE_FACTOR, so a stored request should
+ * never carry one; this is the guard for the day that stops being true.
+ */
+export function isValidRelativeDifference(difference: BigInt): bool {
+  return difference <= SCALE_FACTOR
+}
+
+/**
  * Math.isRelativelyLessThan:
  *
  *     a * SCALE_FACTOR < b * (SCALE_FACTOR - difference)
@@ -34,13 +49,12 @@ export function convertAssets(normalizedAmount: BigInt, normalizedPrice: BigInt)
  * silently mis-prices every request in a falling market, so the comparison is
  * transcribed rather than reformulated.
  *
- * The Solidity version reverts when difference > SCALE_FACTOR. Off-chain a bad
- * tolerance read should degrade to "no upkeep", not to a wrong answer — so this
- * returns false (not-slippage-closed) only after the caller has had a chance
- * to see the anomaly; the executor re-derives the truth on-chain regardless.
+ * Callers MUST gate on isValidRelativeDifference first. `false` here means
+ * "not slippage-closed", i.e. the request costs full price — the opposite of a
+ * safe degradation — so an out-of-range difference must never reach this far.
  */
 export function isRelativelyLessThan(a: BigInt, b: BigInt, difference: BigInt): bool {
-  if (difference > SCALE_FACTOR) {
+  if (!isValidRelativeDifference(difference)) {
     return false
   }
   return a.times(SCALE_FACTOR) < b.times(SCALE_FACTOR.minus(difference))

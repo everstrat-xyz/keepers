@@ -45,7 +45,10 @@ this repo holds up its end by making amounts inexpressible:
   (`mimic-functions/queue-keeper/src/params.ts`).
 - `decode()` enforces the **exact** wire length per action, because all
   layouts are static and a smuggled amount can only appear as a trailing word
-  that Solidity's `abi.decode` would silently ignore.
+  that Solidity's `abi.decode` would silently ignore. `function.ts` runs it
+  over the bytes it is about to send, so the rule holds on every tick — while
+  it was unreachable from `main()` it did not even compile (AssemblyScript has
+  no closures), which is what an unenforced guard decays into.
 
 **Reviewing:** any new field in `Params`, any amount reaching `encode()`, any
 relaxation of the length check.
@@ -162,8 +165,12 @@ with a reason, not a shrug.
   [`contracts/evm/src/abi/SOURCE.md`](contracts/evm/src/abi/SOURCE.md) and
   update the pinned commit in the same PR. `Pausable.json` and
   `Multicall3.json` are hand-written exceptions, documented there.
-- **Addresses are not secrets.** They are public config. The functions' inputs
-  carry `registryAddress` and the executor address; nothing else.
+- **Addresses are not secrets.** They are public config. W1's inputs carry the
+  executor, Controller, ExitQueue and AMM addresses plus the Mimic smart
+  account; W2's carry the executor and the smart account. `manifest.yaml` is
+  the authoritative list — `scripts/create-trigger.ts` and
+  `docs/MIMIC_CUTOVER.md` must name every key it declares, or trigger creation
+  fails manifest validation.
 - **The Mimic smart-account signer is assigned when the task is created**,
   which is why `KeeperExecutorBase` has a settable allowlist rather than an
   immutable constructor arg. Executors deploy inert by design.

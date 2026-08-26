@@ -6,7 +6,7 @@ description: >
   perform(action, params) EvmCall intent when work exists.
 inputs:
   - chainId: uint32
-  - registry: address
+  - amm: address
   - executor: address
   - controller: address
   - exitQueue: address
@@ -18,5 +18,4 @@ abis:
   - QueueKeeperExecutor: ./abis/QueueKeeperExecutor.json
   - IExitQueue: ./abis/IExitQueue.json
   - IController: ./abis/IController.json
-  - IRegistry: ./abis/IRegistry.json
   - Pausable: ./abis/Pausable.json
