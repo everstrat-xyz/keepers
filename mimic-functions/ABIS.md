@@ -25,6 +25,7 @@ as a build error.
 | `QueueKeeperExecutor.json` | The W1 target: `perform`, `queueUpkeepStatus`, `nextBatchIdToProcess`, `minBatchAge`, `maxUsersPerUpkeep`, `paused` |
 | `IExitQueue.json` | The off-chain queue scan: `currentBatchId`, `batchInfo`, `unprocessedUsers*`, `requestInfo`, `MAX_BATCH_PROCESSING_TIME` |
 | `Pausable.json` | Pause fan-out on the executor, Controller, ExitQueue and AMM |
+| `MimicHelper.json` | The Controller-balance read — see hand-written fragments below |
 
 `mimic-functions/strategy-keeper/abis/` (W2):
 
@@ -69,4 +70,12 @@ chain.
 the refresh above: it is OpenZeppelin's `paused()`. The EverStrat interfaces
 inherit `Pausable` without re-declaring it, so it appears in no forge artifact,
 yet W1's pause fan-out reads it on the Controller, the ExitQueue and the AMM.
-Controller ETH balance is `environment.getNativeTokenBalance`, not an ABI.
+
+`MimicHelper.json` is the other hand-written fragment: Mimic's own helper
+interface (`getNativeTokenBalance(address)`), whose address is a function
+input. `environment.getNativeTokenBalance` in lib-ts hardcodes a single helper
+address for every chain, and that address is not deployed on Base Sepolia
+(84532) — the oracle answers `0x` and the decode aborts the tick. Reading
+`getNativeTokenBalance` through the `helper` input keeps W1 portable across
+Mimic's per-chain helper deployments; on Base Sepolia the working helper is
+`0x5cf82cBED1110fc2f75B3413d53abac492931804`.

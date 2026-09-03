@@ -18,6 +18,7 @@ import { BigInt, Bytes, environment, log, TokenAmount } from '@mimicprotocol/lib
 import { DenominationToken } from '@mimicprotocol/lib-ts'
 
 import { IExitQueue } from './types/IExitQueue'
+import { MimicHelper } from './types/MimicHelper'
 import { Pausable } from './types/Pausable'
 import { QueueKeeperExecutor } from './types/QueueKeeperExecutor'
 import { ActionNone, Batch, decide, Request, requestCost, State } from './decide'
@@ -30,8 +31,9 @@ export default function main(): void {
   const executor = new QueueKeeperExecutor(inputs.executor, inputs.chainId)
   const exitQueue = new IExitQueue(inputs.exitQueue, inputs.chainId)
   const controller = new Pausable(inputs.controller, inputs.chainId)
+  const helper = new MimicHelper(inputs.helper, inputs.chainId)
 
-  const state = readState(executor, exitQueue, controller)
+  const state = readState(executor, exitQueue, controller, helper)
   const decision = decide(state)
 
   // Cross-check against queueUpkeepStatus(). A failure here loses the
@@ -102,7 +104,12 @@ function actionName(a: u8): string {
  * reads, a batchInfo/unprocessedUsersCount walk, then user lists and
  * requestInfo for the first batch with an affordable prefix.
  */
-function readState(executor: QueueKeeperExecutor, exitQueue: IExitQueue, controller: Pausable): State {
+function readState(
+  executor: QueueKeeperExecutor,
+  exitQueue: IExitQueue,
+  controller: Pausable,
+  helper: MimicHelper
+): State {
   const context = environment.getContext()
   // The runner hands us a millisecond timestamp; the queue's batch and
   // pricing timestamps are block-time seconds. Convert once, here. This is
@@ -164,7 +171,12 @@ function readState(executor: QueueKeeperExecutor, exitQueue: IExitQueue, control
   )
 
   // The Controller's own balance — the only budget affordability depends on.
-  const balanceResult = environment.getNativeTokenBalance(inputs.chainId, inputs.controller)
+  // Read through the helper contract passed as an input rather than lib-ts's
+  // environment.getNativeTokenBalance: that helper hardcodes one address for
+  // all chains, and on Base Sepolia that address has no code — the oracle
+  // answers 0x and the decode aborts the tick. The helper is an input for the
+  // same reason the AMM is: infrastructure addresses differ per chain.
+  const balanceResult = helper.getNativeTokenBalance(inputs.controller)
   if (balanceResult.isError) {
     log.warning('controller balance unavailable: ' + balanceResult.error)
     return state

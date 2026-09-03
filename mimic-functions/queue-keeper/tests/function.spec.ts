@@ -28,7 +28,7 @@ const AMM = '0x0000000000000000000000000000000000000350'
 const SMART_ACCOUNT = '0x0000000000000000000000000000000000000400'
 const USER_A = '0x0000000000000000000000000000000000000aa1'
 const USER_B = '0x0000000000000000000000000000000000000aa2'
-const MIMIC_HELPER = '0x2ef71e27560874b932ef1cf9e95d340595a92f44'
+const MIMIC_HELPER = '0x0000000000000000000000000000000000000360'
 
 // Selectors for every read the function can emit.
 const SEL = {
@@ -43,7 +43,8 @@ const SEL = {
   nextBatchIdToProcess: '0x092a786c',
   minBatchAge: '0x13ab3b2e',
   maxUsersPerUpkeep: '0x0ab6be7a',
-  // environment.getNativeTokenBalance → balanceOf(controller) on the helper
+  // helper.getNativeTokenBalance(controller) — through the helper input, not
+  // lib-ts's hardcoded one
   nativeBalance: '0xeffd663c',
 }
 
@@ -61,6 +62,7 @@ const inputs = {
   executor: EXECUTOR,
   controller: CONTROLLER,
   exitQueue: EXIT_QUEUE,
+  helper: MIMIC_HELPER,
   smartAccount: SMART_ACCOUNT,
   maxBatches: 250,
   maxRequestsPerBatch: 50,
