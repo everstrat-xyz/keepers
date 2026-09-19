@@ -13,8 +13,8 @@ as a build error.
 | Field | Value |
 | --- | --- |
 | Source repo | `everstrat-xyz/contracts` |
-| Commit | `<update on refresh>` — vendor-neutral executor surface (`checker()` / `perform()` / caller allowlist) |
-| Vendored on | 2026-08-26 |
+| Commit | `49c0e63` (main) — UniCLStrat calm/TWAP surface for keepers#27 suppression |
+| Vendored on | 2026-09-19 |
 
 ## Contents
 
@@ -30,11 +30,18 @@ as a build error.
 
 | File | Why the function needs it |
 | --- | --- |
-| `StrategyKeeperExecutor.json` | The whole function: `checker()` in, `perform` calldata out |
+| `StrategyKeeperExecutor.json` | The W2 target: `checker()` in, `perform` calldata out; `registry()` for the suppression walk |
+| `IRegistry.json` | `getContractByKey(STRATEGY_MANAGER)` — the registry has no named getter |
+| `StrategyManager.json` | `strategies()` — the executor's Rebalance selection set |
+| `UniCLStrat.json` | Per-strategy suppression reads: `paused`, `isHealthy`, `pool`, `maxTickDeviation`, `twapInterval`, `shortTwapInterval` (public state the interfaces do not declare) |
+| `IUniswapV3Pool.json` | `_isCalm()` inputs: `slot0` spot tick and `observe` tick cumulatives |
 
-The **contract** ABIs are vendored, not the interfaces — the functions read
-public state (`minBatchAge`, `nextBatchIdToProcess`) that the interfaces do not
-declare.
+The **contract** ABIs are vendored where the function reads public state
+(`minBatchAge`, `nextBatchIdToProcess`, `maxTickDeviation`) that the
+interfaces do not declare. Interfaces are vendored where they are the whole
+surface: `IExitQueue`, `IRegistry` (`getContractByKey` is the only read), and
+`IUniswapV3Pool` (the pools are external Uniswap deployments — no pool
+contract exists in the repo to vendor).
 
 An ABI that no `manifest.yaml` lists is dead weight and should be deleted: it
 is compiled into nothing, and its presence implies a read the function does not
@@ -52,6 +59,14 @@ jq -S '.abi' "$CONTRACTS/out/IExitQueue.sol/IExitQueue.json" \
   > mimic-functions/queue-keeper/abis/IExitQueue.json
 jq -S '.abi' "$CONTRACTS/out/StrategyKeeperExecutor.sol/StrategyKeeperExecutor.json" \
   > mimic-functions/strategy-keeper/abis/StrategyKeeperExecutor.json
+jq -S '.abi' "$CONTRACTS/out/IRegistry.sol/IRegistry.json" \
+  > mimic-functions/strategy-keeper/abis/IRegistry.json
+jq -S '.abi' "$CONTRACTS/out/StrategyManager.sol/StrategyManager.json" \
+  > mimic-functions/strategy-keeper/abis/StrategyManager.json
+jq -S '.abi' "$CONTRACTS/out/UniCLStrat.sol/UniCLStrat.json" \
+  > mimic-functions/strategy-keeper/abis/UniCLStrat.json
+jq -S '.abi' "$CONTRACTS/out/IUniswapV3Pool.sol/IUniswapV3Pool.json" \
+  > mimic-functions/strategy-keeper/abis/IUniswapV3Pool.json
 
 (cd mimic-functions/queue-keeper && npx mimic codegen)
 (cd mimic-functions/strategy-keeper && npx mimic codegen)

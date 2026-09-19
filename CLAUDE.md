@@ -18,7 +18,14 @@ Automation for EverStrat's keeper plane, running on the
 - **W2** (`mimic-functions/strategy-keeper/`) — a thin Mimic relay function.
   `StrategyKeeperExecutor` exposes its own `checker()` returning
   `(canExec, execPayload)`; the function forwards the payload **verbatim** —
-  no off-chain re-derivation, no payload interpretation.
+  no off-chain re-derivation, no payload interpretation. One exception
+  (keepers#27): a Rebalance whose every selected (`!paused && !isHealthy()`)
+  strategy is not calm is a guaranteed on-chain revert
+  (`UniCLStrat.rebalance()` requires `_isCalm()` even when `!isHealthy()`
+  comes only from turbulence), so the tick is suppressed instead of relayed —
+  see `src/suppression.ts`. Suppression only ever withholds the contract's
+  own bytes; it never builds a payload. Every tick logs one class: `relay` /
+  `suppressed-noop-rebalance` / `read-error`.
 W4 (`freeze-watch/`), the read-only freeze-precursor watcher, was removed
 along with the Go toolchain and CRE CLI it was the last consumer of. It is in
 git history if it comes back.
@@ -137,6 +144,10 @@ by re-running the function's `encode`.
 Do not "recompute" a fixture from the code under test to make it pass — that
 is testing the code against itself.
 
+Incident replays go one step further: W2's `tests/incident-fixtures.ts` is
+chain-verbatim archive reads (raw return data) from the keepers#27 incident
+blocks, cross-checked against ethers' encoding where the two must agree.
+
 ### The tests run the real compiled WASM
 
 Both functions are tested through a raw-mock harness (`tests/helpers.ts`)
@@ -159,7 +170,10 @@ looks exactly like a broken keeper.
 `Action.None/PriceBatch/ProcessRequests/AdvanceCursor` = 0/1/2/3, matching
 `IQueueKeeperExecutor.QueueAction`. Solidity enums reorder silently; the
 constants in `decide.ts` must move with them or every payload is silently
-retargeted.
+retargeted. Same rule for W2's `ActionRebalance = 1` in
+`mimic-functions/strategy-keeper/src/suppression.ts`
+(`IStrategyKeeperExecutor.StrategyAction`) and the registry key
+`keccak256("STRATEGY_MANAGER")` pinned next to it.
 
 ### Divergence classification is code, not judgment
 
