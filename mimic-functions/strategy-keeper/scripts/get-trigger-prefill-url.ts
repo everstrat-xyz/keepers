@@ -23,7 +23,7 @@ async function main(): Promise<void> {
     input: functionInputs,
     config: cronConfig(),
     description: `EverStrat strategy keeper (W2) — chain ${functionInputs.chainId}`,
-    version: '1.0.0',
+    version: '1.1.0',
   })
 
   console.log(`Trigger prefill URL: ${prefillUrl}`)

@@ -4,7 +4,9 @@
  * Shares the design of queue-keeper's harness: `checker()` returns a
  * `(bool,bytes)` tuple, which @mimicprotocol/test-ts's mock schema cannot
  * express, so responses are keyed by the EIP-712 query hash the runner itself
- * computes and the compiled WASM runs unmodified.
+ * computes and the compiled WASM runs unmodified. Token prices go through
+ * the same hash, with the params shape @mimicprotocol/test-ts builds for a
+ * TokenPriceQuery.
  */
 import { runExecution } from '@mimicprotocol/runner-node'
 import { EthersSigner, type EvmCallOperation, type Intent, OpType, OracleSigner } from '@mimicprotocol/sdk'
@@ -33,6 +35,16 @@ export function mockTuple(to: string, data: string, abiType: string, values: unk
   return { to, data, value: CODER.encode([abiType], values) }
 }
 
+/** One mocked token price: the USD value of one whole token, as a decimal string. */
+export interface PriceMock {
+  chainId: number
+  address: string
+  usd: string
+}
+
+/** lib-ts's native-token placeholder (`EVM_NATIVE_ADDRESS`), which the fee cap prices ETH by. */
+export const NATIVE_TOKEN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+
 export interface RunResult {
   success: boolean
   intents: Intent[]
@@ -44,6 +56,7 @@ export async function runWithRawMocks(
   context: Context,
   inputs: Record<string, unknown>,
   mocks: RawMock[],
+  prices: PriceMock[] = [],
   debug = false
 ): Promise<RunResult> {
   const oracleResponses: Record<string, unknown[]> = {}
@@ -54,6 +67,18 @@ export async function runWithRawMocks(
     mockKeys.set(hash, `${m.to} ${m.data}`)
     oracleResponses[hash] = [
       { result: { value: m.value }, query: { params, name: 'EvmCallQuery', hash }, signature: '' },
+    ]
+  }
+
+  for (const p of prices) {
+    const params = { token: { address: p.address, chainId: p.chainId }, timestamp: context.timestamp }
+    const hash = SIGNER.getQueryHash(params, 'TokenPriceQuery')
+    oracleResponses[hash] = [
+      {
+        result: { value: ethers.parseUnits(p.usd, 18).toString() },
+        query: { params, name: 'TokenPriceQuery', hash },
+        signature: '',
+      },
     ]
   }
 

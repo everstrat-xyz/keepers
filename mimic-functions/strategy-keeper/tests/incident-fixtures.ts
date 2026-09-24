@@ -333,3 +333,39 @@ export function incidentMocks(block: IncidentBlock): RawMock[] {
   if (block === 26004793) return BLOCK_26004793.map((m) => ({ ...m }))
   return BLOCK_26004820.map((m) => ({ ...m }))
 }
+
+export const EXIT_QUEUE = '0x70e284502e99e150fde1c07b4e8171ffc365423c'
+export const QUEUE_KEEPER_EXECUTOR = '0xb7d76e4334e9e23b6edff77e0c05b07e938a090b'
+
+/**
+ * The reads a relayed Rebalance adds for its fee cap — the withdrawal-deadline
+ * scan — at block 26004820, captured 2026-09-24 by the same eth_call archive
+ * method. The cursor (2) equals currentBatchId (2): no priced batch is in
+ * window, so nothing raises the Rebalance ceiling.
+ */
+export const FEE_READS_26004820: RawMock[] = [
+  {
+    to: REGISTRY,
+    // getContractByKey(keccak256("EXIT_QUEUE"))
+    data: '0xd20303136a7c10ecf5ed4662e5ef8392907aa359123001b89182291fde3f91408f34221f',
+    value: '0x00000000000000000000000070e284502e99e150fde1c07b4e8171ffc365423c',
+  },
+  {
+    to: REGISTRY,
+    // getContractByKey(keccak256("QUEUE_KEEPER_EXECUTOR"))
+    data: '0xd203031366854862635421a5d930a231dd533764fb30f528b7f7dd0feb1d93fb2e4e25d2',
+    value: '0x000000000000000000000000b7d76e4334e9e23b6edff77e0c05b07e938a090b',
+  },
+  // MAX_BATCH_SCAN() = 25
+  { to: EXECUTOR, data: '0x8ade7d4d', value: '0x0000000000000000000000000000000000000000000000000000000000000019' },
+  // nextLiveBatchIdToProcess() = 2
+  {
+    to: QUEUE_KEEPER_EXECUTOR,
+    data: '0x37687dcc',
+    value: '0x0000000000000000000000000000000000000000000000000000000000000002',
+  },
+  // currentBatchId() = 2
+  { to: EXIT_QUEUE, data: '0x0a763da1', value: '0x0000000000000000000000000000000000000000000000000000000000000002' },
+  // MAX_BATCH_PROCESSING_TIME() = 259200 (3 days)
+  { to: EXIT_QUEUE, data: '0x89c5a797', value: '0x000000000000000000000000000000000000000000000000000000000003f480' },
+]

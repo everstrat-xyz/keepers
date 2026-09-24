@@ -18,6 +18,43 @@ export interface StrategyKeeperInputs {
   executor: string
   smartAccount: string
   maxFee: string
+  rebalanceMaxGwei: string
+  syncMaxGwei: string
+  withdrawMaxGwei: string
+  withdrawUrgentMaxGwei: string
+  withdrawRampStartHours: number
+  withdrawRampEndHours: number
+  amountFeeBps: number
+}
+
+/**
+ * Fee-cap defaults, derived in docs/MIMIC_CUTOVER.md ("Fee caps") from 30 days
+ * of mainnet base fees and W2's own settlements. maxFee is the absolute USD
+ * ceiling over every per-action cap; it has to clear the urgent withdrawal
+ * cap (~$35 at 3 gwei, three strategies, ETH $2,700) or a near-expiry
+ * shortfall is clamped below what it needs.
+ */
+const FEE_DEFAULTS = {
+  MAX_FEE: '50',
+  REBALANCE_MAX_GWEI: '0.4',
+  SYNC_MAX_GWEI: '0.25',
+  WITHDRAW_MAX_GWEI: '0.3',
+  WITHDRAW_URGENT_MAX_GWEI: '3',
+  WITHDRAW_RAMP_START_HOURS: '24',
+  WITHDRAW_RAMP_END_HOURS: '12',
+  AMOUNT_FEE_BPS: '115',
+}
+
+function fee(name: keyof typeof FEE_DEFAULTS): string {
+  return process.env[name] ?? FEE_DEFAULTS[name]
+}
+
+function wholeNumber(name: keyof typeof FEE_DEFAULTS): number {
+  const value = Number(fee(name))
+  // The manifest types these uint32: a fraction or a negative would fail
+  // trigger creation, not a tick — say which variable.
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a whole number, got ${fee(name)}`)
+  return value
 }
 
 /** Stand-in for the smart account before a trigger exists. See `inputs()`. */
@@ -43,7 +80,14 @@ export function inputs(requireSmartAccount = false): StrategyKeeperInputs {
     chainId: Number(required('CHAIN_ID')),
     executor: required('STRATEGY_EXECUTOR_ADDRESS'),
     smartAccount: requireSmartAccount ? required('SMART_ACCOUNT_ADDRESS') : UNASSIGNED_SMART_ACCOUNT,
-    maxFee: process.env.MAX_FEE ?? '1',
+    maxFee: fee('MAX_FEE'),
+    rebalanceMaxGwei: fee('REBALANCE_MAX_GWEI'),
+    syncMaxGwei: fee('SYNC_MAX_GWEI'),
+    withdrawMaxGwei: fee('WITHDRAW_MAX_GWEI'),
+    withdrawUrgentMaxGwei: fee('WITHDRAW_URGENT_MAX_GWEI'),
+    withdrawRampStartHours: wholeNumber('WITHDRAW_RAMP_START_HOURS'),
+    withdrawRampEndHours: wholeNumber('WITHDRAW_RAMP_END_HOURS'),
+    amountFeeBps: wholeNumber('AMOUNT_FEE_BPS'),
   }
 }
 

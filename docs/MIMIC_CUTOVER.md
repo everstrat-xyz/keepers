@@ -56,8 +56,9 @@ is deployed, and recreating a task can rotate it: update the trigger input
 
 ## 1. W2 — StrategyKeeperExecutor (checker relay)
 
-W2's function is a pure relay: the contract's own `checker()` decides, and
-`mimic-functions/strategy-keeper` forwards its `execPayload` verbatim.
+W2's function is a relay: the contract's own `checker()` decides, and
+`mimic-functions/strategy-keeper` forwards its `execPayload` verbatim. What it
+does choose is the intent's max fee, per action (§1.5).
 
 ### 1.1 Deploy the function
 
@@ -79,9 +80,21 @@ deployment chain. Configure the function inputs:
   "chainId": 10,
   "executor": "0x…",
   "smartAccount": "0x…",
-  "maxFee": "1"
+  "maxFee": "50",
+  "rebalanceMaxGwei": "0.4",
+  "syncMaxGwei": "0.25",
+  "withdrawMaxGwei": "0.3",
+  "withdrawUrgentMaxGwei": "3",
+  "withdrawRampStartHours": 24,
+  "withdrawRampEndHours": 12,
+  "amountFeeBps": 115
 }
 ```
+
+Every key is required by `manifest.yaml`; `scripts/inputs.ts` fills the fee
+keys with these defaults unless `scripts/.env` overrides them. A malformed or
+inconsistent fee input makes every tick log `W2 config-error` naming the field
+and emit nothing — check the first execution's logs after creating the task.
 
 `smartAccount` is the Mimic account for this chain (see **Smart account
 wiring**). Look it up in the App *before* signing. It is also the address
@@ -109,7 +122,74 @@ executorCallerCount() == 1
 - work due → `canExec == true` and the intent's calldata equals `execPayload`
   byte-for-byte
 
-Watch one full poll cycle before declaring W2 live.
+Watch one full poll cycle before declaring W2 live. The relay log line names
+the action and how its max fee was built.
+
+### 1.5 Fee caps
+
+A solver quotes ≈ gasUsed × gas price × its markup, and cannot fill above the
+intent's max fee. So the max fee is a gas-price ceiling: during a spike the
+intent lapses and the next 5-minute tick retries, at the cost of an idle tick.
+W2 sets it per action, by what waiting costs, converts it to USD at the Mimic
+oracle's native-token price, and clamps it to `maxFee`.
+
+| action | what waiting costs | cap |
+|---|---|---|
+| WithdrawShortfall | A priced exit is committed and strands at `pricedAt + 3 days` | `withdrawMaxGwei` until `withdrawRampStartHours` before the earliest in-window batch with unprocessed users expires, linear to `withdrawUrgentMaxGwei` at `withdrawRampEndHours`. No amount term: `minWithdrawETH` can be 1e14 |
+| Rebalance | ~$0.06/h of LP fees for the largest strategy | `rebalanceMaxGwei`, raised to the withdrawal ramp when a batch nears expiry — `checker()` hides the WithdrawShortfall behind a pending Rebalance |
+| Sync | NAV lags by at most a day of unpoked fees (~0.08% of NAV) | `syncMaxGwei` |
+| DepositExcess, HarvestPerformanceFees, ProvideExitLiquidity | Yield on idle ETH only | `amountFeeBps` of `strategyUpkeepStatus().amount` |
+| undecodable payload | — | flat `maxFee` |
+
+A gwei ceiling becomes a fee through a gas budget per strategy the action
+touches — Rebalance 1.69M per selected strategy, Sync 210k and
+WithdrawShortfall 980k per registered strategy — times a 1.45 solver markup.
+Adding a strategy scales the budget; no input needs to change.
+
+**Where the defaults come from** (analysis of 2026-09-24):
+
+- *Solver pricing* — W2's 13 mainnet settlements 2026-09-20..23, priced with
+  Chainlink ETH/USD at each block. Fee over gas cost: 1.03–1.41 (one 0.74 where
+  the base fee rose after the quote); worst per action sets the 1.45 markup.
+  Gas: Rebalance 1.45–1.69M (one strategy each), Sync 0.52–0.60M,
+  DepositExcess 2.87–3.14M, WithdrawShortfall 2.94M (three strategies).
+  Solver tip 0.01–0.39 gwei, median ~0.15.
+- *Gas market* — 30 days of mainnet base fees (blocks 25,827,075–26,043,075).
+  Median 0.073 gwei, p90 0.33, p99 1.40, max 6.3. At the ceiling (base + 0.15
+  tip), share of 5-minute ticks that fill / longest stretch blocked:
+
+  | ceiling | fills | longest blocked |
+  |---|---|---|
+  | 0.25 gwei | 62% | 18.2h |
+  | 0.30 gwei | 75% | 15.5h |
+  | 0.40 gwei | 86% | 11.8h |
+  | 1.00 gwei | 97% | 2.3h |
+  | 3.00 gwei | 99.8% | 0.3h |
+
+  The withdrawal floor was never blocked longer than 15.5h against a 72h
+  window; the ramp is for the tail beyond that sample.
+- *Protocol* — LP fees collected by the three strategies since 2026-09-12:
+  $9.26, ~$2.19 per ETH-day (~30% APR, lower bound: uncollected fees excluded).
+  One rebalance per strategy in that time (~8 days in range). Every exit batch
+  so far was processed 5–35 minutes after pricing. `performanceFeeBps` is 0 on
+  mainnet, so HarvestPerformanceFees does not fire today.
+- *Deposit share* — 115 bps pays back in ~14 days at $2.19 per ETH-day. At the
+  0.1 ETH `minDepositETH` that is ~$3.1, a ~0.3 gwei ceiling; larger deposits
+  clear higher gas.
+
+Replaying the 13 settlements under these caps: 8 fill unchanged, 5 defer
+2.6–9.9h, and total solver spend drops from $34.20 to ~$21.
+
+Revisit the ceilings, not the ETH price: caps follow the oracle price on every
+tick. Revisit the gas budgets if a strategy type with a different gas profile
+is added, and `maxFee` if ETH moves enough that the urgent withdrawal cap
+(~$35 at ETH $2,700) approaches it.
+
+**Replacing a live trigger.** The inputs are new, so an existing W2 trigger
+cannot be edited into this version: deploy the function, create a new trigger
+with the same `smartAccount` (the executor allowlist is unchanged), confirm its
+first ticks log `W2 strategy-keeper: no upkeep` or `W2 relay`, then disable the
+old trigger. Two live W2 triggers race each other for the same work.
 
 ---
 

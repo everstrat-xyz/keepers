@@ -17,23 +17,36 @@
  * Suppression only ever withholds the contract's own bytes; it never builds
  * a payload. See src/suppression.ts.
  *
+ * The one thing W2 does choose is the intent's max fee: a gas-price ceiling
+ * or a share of the amount moved, per action, never above maxFee. A solver
+ * cannot fill above it, so a relay during a gas spike lapses and the next
+ * tick retries. See src/feecap.ts.
+ *
  * If any view errors, emit nothing: the next tick retries. A relay that
  * guesses is worse than a relay that waits. An execPayload that does not
- * decode as perform(uint8) is relayed verbatim — the pre-suppression
- * behaviour, never worse than today.
+ * decode as perform(uint8) is relayed verbatim under the flat maxFee — the
+ * pre-suppression behaviour, never worse than today.
  *
  * One log class per tick: `relay` / `suppressed-noop-rebalance` /
- * `read-error` (idle ticks log no upkeep, as before).
+ * `read-error` / `config-error` (idle ticks log no upkeep, as before).
  */
 
-import { EvmCallBuilder, log, TokenAmount } from '@mimicprotocol/lib-ts'
-import { DenominationToken } from '@mimicprotocol/lib-ts'
+import { BigInt, environment, EvmCallBuilder, log } from '@mimicprotocol/lib-ts'
 
 import { StrategyKeeperExecutor } from './types/StrategyKeeperExecutor'
-import { ActionRebalance, decodePerformAction, evaluateSuppression } from './suppression'
+import { actionName, ActionRebalance, decodePerformAction } from './actions'
+import { feeCap, FeePolicy } from './feecap'
+import { evaluateSuppression } from './suppression'
 import { inputs } from './types'
 
 export default function main(): void {
+  const policyResult = FeePolicy.fromInputs()
+  if (policyResult.isError) {
+    log.error('W2 config-error: ' + policyResult.error + ' — emitting nothing until the trigger inputs are fixed')
+    return
+  }
+  const policy = policyResult.unwrap()
+
   const executor = new StrategyKeeperExecutor(inputs.executor, inputs.chainId)
 
   const status = executor.checker()
@@ -48,7 +61,10 @@ export default function main(): void {
     return
   }
 
-  if (decodePerformAction(result.execPayload) == ActionRebalance) {
+  const action = decodePerformAction(result.execPayload)
+  let selectedStrategies = 0
+  let relayNote = 'forwarding checker() execPayload verbatim'
+  if (action == ActionRebalance) {
     const verdict = evaluateSuppression(executor, inputs.chainId)
     if (verdict.error != '') {
       log.warning('W2 read-error: ' + verdict.error + ' — emitting nothing this tick')
@@ -62,16 +78,25 @@ export default function main(): void {
       log.info('W2 suppressed-noop-rebalance: every selected strategy is not calm, batch cannot move — ' + detail)
       return
     }
-    log.info('W2 relay: Rebalance with at least one calm unhealthy strategy — relaying checker() execPayload verbatim')
-  } else {
-    log.info('W2 relay: forwarding checker() execPayload verbatim')
+    selectedStrategies = verdict.checks.length
+    relayNote = 'at least one calm unhealthy strategy — relaying checker() execPayload verbatim'
   }
 
-  const fee = TokenAmount.fromStringDecimal(DenominationToken.USD(), inputs.maxFee)
+  // The runner's clock is milliseconds; batch expiry is block-time seconds
+  // (CLAUDE.md §2). Convert once, here.
+  const now = BigInt.fromU64(environment.getContext().timestamp).div(BigInt.fromI32(1000)).toI64()
+
+  const capResult = feeCap(executor, inputs.chainId, action, selectedStrategies, policy, now)
+  if (capResult.isError) {
+    log.warning('W2 read-error: fee cap: ' + capResult.error + ' — emitting nothing this tick')
+    return
+  }
+  const cap = capResult.unwrap()
+  log.info('W2 relay: ' + actionName(action) + ', ' + relayNote + ' — max fee ' + cap.basis)
 
   EvmCallBuilder.forChain(inputs.chainId)
     .addCall(inputs.executor, result.execPayload)
     .addUser(inputs.smartAccount)
     .build()
-    .send(fee)
+    .send(cap.fee)
 }

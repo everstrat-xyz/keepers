@@ -46,7 +46,9 @@ show up:
 
 W2's decisions are all bounded re-derivations — a "truer" off-chain number
 would revert — so `checker()` stays authoritative and the function only
-relays its `execPayload` verbatim.
+relays its `execPayload` verbatim. It chooses the intent's max fee per action
+(a gas-price ceiling, or a share of the amount moved), so work that can wait
+waits out gas spikes; see docs/MIMIC_CUTOVER.md §1.5.
 
 Both executors authenticate the same way: Mimic calls `perform()` from a
 smart account that must be in the executor's `allowExecutorCaller` allowlist
@@ -108,6 +110,8 @@ create its task with the same smart-account input, allowlist that signer.
 │   │   └── tests/          # raw-mock oracle harness + scenario specs
 │   ├── strategy-keeper/    # W2 — checker() relay, payload forwarded verbatim
 │   │   ├── src/function.ts # tick: read checker(), relay execPayload
+│   │   ├── src/suppression.ts # no-op Rebalance suppression (keepers#27)
+│   │   ├── src/feecap.ts   # per-action max fee: gwei ceilings, deadline ramp
 │   │   └── tests/
 │   └── ABIS.md             # Vendored-ABI provenance and refresh recipe
 ├── docs/MIMIC_CUTOVER.md   # The cutover runbook
@@ -117,8 +121,9 @@ create its task with the same smart-account input, allowlist that signer.
 ## The address book
 
 Protocol addresses are **function inputs**, declared in each `manifest.yaml`:
-W1 takes the executor, Controller, ExitQueue and AMM; W2 takes the executor.
-Both also take the Mimic smart account that will call `perform()`.
+W1 takes the executor, Controller, ExitQueue and AMM; W2 takes the executor
+(and resolves the rest through its registry, as the executor does). Both also
+take the Mimic smart account that will call `perform()`.
 
 The AMM is there for one reason — its pause flag. `queueUpkeepStatus` refuses
 to recommend work while the AMM is paused, and W1 has to refuse for the same
