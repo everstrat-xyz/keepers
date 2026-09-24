@@ -3,9 +3,10 @@
  * deployment, without creating a trigger.
  *
  * W2 forwards `StrategyKeeperExecutor.checker()`'s execPayload verbatim, so
- * this answers the only two questions that matter before binding: does the
- * oracle serve the `checker()` call at all, and does the payload it returns
- * decode into a `perform` call. `npm test` mocks both.
+ * this answers the questions that matter before binding: does the oracle
+ * serve the `checker()` call at all, does the payload it returns decode into
+ * a `perform` call, and — on a tick with work — does the oracle price the
+ * native token the fee cap converts through. `npm test` mocks all three.
  *
  *   cd mimic-functions/strategy-keeper && npm run build && npm run try-function
  *
@@ -32,7 +33,9 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(result, null, 2))
 
   const logs: string[] = (result.logs ?? []).map((entry: unknown) => JSON.stringify(entry))
-  const line = logs.find((l) => l.includes('W2 strategy-keeper:') || l.includes('W2 checker() unavailable'))
+  // One log class per tick (src/function.ts): relay, suppressed-noop-rebalance,
+  // read-error, config-error, or the idle `no upkeep` line.
+  const line = logs.find((l) => l.includes('W2 '))
 
   console.log('\n--- summary ---')
   console.log(line ?? 'no decision logged — the tick aborted before reading checker()')

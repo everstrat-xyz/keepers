@@ -24,8 +24,12 @@ Automation for EverStrat's keeper plane, running on the
   (`UniCLStrat.rebalance()` requires `_isCalm()` even when `!isHealthy()`
   comes only from turbulence), so the tick is suppressed instead of relayed —
   see `src/suppression.ts`. Suppression only ever withholds the contract's
-  own bytes; it never builds a payload. Every tick logs one class: `relay` /
-  `suppressed-noop-rebalance` / `read-error`.
+  own bytes; it never builds a payload. What W2 does choose is the intent's
+  max fee (`src/feecap.ts`): a per-action gas-price ceiling, or a share of the
+  amount moved, never above `maxFee` — a solver cannot fill above it, so a
+  relay during a gas spike lapses and the next tick retries. Every tick logs
+  one class: `relay` / `suppressed-noop-rebalance` / `read-error` /
+  `config-error`.
 W4 (`freeze-watch/`), the read-only freeze-precursor watcher, was removed
 along with the Go toolchain and CRE CLI it was the last consumer of. It is in
 git history if it comes back.
@@ -61,6 +65,12 @@ this repo holds up its end by making amounts inexpressible:
 
 **Reviewing:** any new field in `Params`, any amount reaching `encode()`, any
 relaxation of the length check.
+
+W2 reads one amount — `strategyUpkeepStatus().amount` — and only to price
+the max fee of a DepositExcess / Harvest / ProvideExitLiquidity relay. It
+never reaches the calldata, which is still `checker()`'s bytes.
+
+**Reviewing (W2):** any path from the fee cap's reads into `addCall`.
 
 ### 2. The tick clock is seconds, not milliseconds
 
@@ -107,7 +117,10 @@ oracle Controller balance below the view's. The shorter-prefix
 prefix; the spec mocks a larger on-chain `count`.
 
 W2: `_execute` re-derives with the **same bounded helpers** the view uses.
-A truer off-chain shortfall would be rejected — hence the relay.
+A truer off-chain shortfall would be rejected — hence the relay. The fee
+cap's withdrawal-deadline scan reads the executor's own `MAX_BATCH_SCAN` and
+cursor (`nextLiveBatchIdToProcess`), so it prices exactly the batches
+`_pendingRedemptionNeedsETH` counts.
 
 `AdvanceCursor` is capped at the bounded peek
 (`decide.ts` → `peekAdvancedCursor(s, MAX_BATCH_SCAN)`).
@@ -170,10 +183,12 @@ looks exactly like a broken keeper.
 `Action.None/PriceBatch/ProcessRequests/AdvanceCursor` = 0/1/2/3, matching
 `IQueueKeeperExecutor.QueueAction`. Solidity enums reorder silently; the
 constants in `decide.ts` must move with them or every payload is silently
-retargeted. Same rule for W2's `ActionRebalance = 1` in
-`mimic-functions/strategy-keeper/src/suppression.ts`
-(`IStrategyKeeperExecutor.StrategyAction`) and the registry key
-`keccak256("STRATEGY_MANAGER")` pinned next to it.
+retargeted. Same rule for W2's `StrategyAction` ordinals 0–6 in
+`mimic-functions/strategy-keeper/src/actions.ts`
+(`IStrategyKeeperExecutor.StrategyAction`) — a moved ordinal retargets
+suppression and prices every fee cap for the wrong work — and the registry
+keys (`keccak256("STRATEGY_MANAGER" / "EXIT_QUEUE" /
+"QUEUE_KEEPER_EXECUTOR")`) pinned in `src/registry.ts`.
 
 ### Divergence classification is code, not judgment
 
@@ -202,7 +217,8 @@ A new source of benign disagreement needs a new class, not a shrug.
   it compiles into nothing and implies a read the function does not make.
 - **Addresses are not secrets.** They are public config. W1's inputs carry the
   executor, Controller, ExitQueue and AMM addresses plus the Mimic smart
-  account; W2's carry the executor and the smart account. `manifest.yaml` is
+  account; W2's carry the executor, the smart account and the fee-cap
+  policy. `manifest.yaml` is
   the authoritative list — `scripts/create-trigger.ts` and
   `docs/MIMIC_CUTOVER.md` must name every key it declares, or trigger creation
   fails manifest validation.

@@ -1,18 +1,26 @@
-version: 1.0.0
+version: 1.1.0
 name: EverStrat Strategy Keeper
 description: >
-  W2 checker relay for the EverStrat strategy executor. Forwards
-  checker() execPayload verbatim, except a Rebalance whose every
-  unhealthy strategy is unhealthy only because the market is not calm —
-  a guaranteed on-chain revert — which is suppressed instead.
+  W2 checker relay for the EverStrat strategy executor. Forwards checker()
+  execPayload verbatim (a guaranteed-revert Rebalance is suppressed) under a
+  per-action max fee: a gas-price ceiling or a share of the amount moved.
 inputs:
   - chainId: uint32
   - executor: address
   - smartAccount: address
   - maxFee: string
+  - rebalanceMaxGwei: string
+  - syncMaxGwei: string
+  - withdrawMaxGwei: string
+  - withdrawUrgentMaxGwei: string
+  - withdrawRampStartHours: uint32
+  - withdrawRampEndHours: uint32
+  - amountFeeBps: uint32
 abis:
   - StrategyKeeperExecutor: ./abis/StrategyKeeperExecutor.json
   - IRegistry: ./abis/IRegistry.json
   - StrategyManager: ./abis/StrategyManager.json
   - UniCLStrat: ./abis/UniCLStrat.json
   - IUniswapV3Pool: ./abis/IUniswapV3Pool.json
+  - IExitQueue: ./abis/IExitQueue.json
+  - IQueueKeeperExecutor: ./abis/IQueueKeeperExecutor.json

@@ -22,47 +22,13 @@
  * contract's own bytes and emitting nothing.
  */
 
-import { Address, Bytes, ChainId, Result } from '@mimicprotocol/lib-ts'
+import { Address, ChainId, Result } from '@mimicprotocol/lib-ts'
 
-import { IRegistry } from './types/IRegistry'
 import { IUniswapV3Pool } from './types/IUniswapV3Pool'
 import { StrategyKeeperExecutor } from './types/StrategyKeeperExecutor'
 import { StrategyManager } from './types/StrategyManager'
 import { UniCLStrat } from './types/UniCLStrat'
-
-// StrategyAction ordinals, pinned to IStrategyKeeperExecutor.StrategyAction:
-// None 0, Rebalance 1, WithdrawShortfall 2, DepositExcess 3,
-// HarvestPerformanceFees 4, Sync 5, ProvideExitLiquidity 6. Solidity enums
-// reorder silently; if the contract enum moves, this must move with it or
-// suppression silently targets the wrong action.
-export const ActionRebalance: u8 = 1
-
-// perform(uint8) selector. checker() builds execPayload as
-// `abi.encodeCall(this.perform, (action))`: 4-byte selector + one 32-byte
-// word holding the enum ordinal.
-const PERFORM_SELECTOR = '0x16d9fdd2'
-const PERFORM_PAYLOAD_LENGTH = 36
-
-// Auth.STRATEGY_MANAGER = keccak256("STRATEGY_MANAGER"). The registry has no
-// named getter; StrategyKeeperExecutor resolves it through this key.
-const STRATEGY_MANAGER_KEY = '0x1893e1a169e79f2fe8aa327b1bceb2fede7a1b76a54824f95ea0e737720954ae'
-
-/**
- * Extracts the action ordinal from a `perform(uint8)` payload, or -1 when the
- * bytes are not exactly selector + one word. Anything undecodable is relayed
- * verbatim by the caller — the pre-suppression behaviour, never worse than
- * today. A payload that decodes but is not Rebalance is out of scope here.
- */
-export function decodePerformAction(execPayload: Bytes): i32 {
-  if (execPayload.length != PERFORM_PAYLOAD_LENGTH) return -1
-  if (!execPayload.toHexString().startsWith(PERFORM_SELECTOR)) return -1
-  // uint8 sits in the low byte of the word; any set bit above it is not a
-  // valid ordinal encoding.
-  for (let i = 4; i < PERFORM_PAYLOAD_LENGTH - 1; i++) {
-    if (execPayload[i] != 0) return -1
-  }
-  return execPayload[PERFORM_PAYLOAD_LENGTH - 1]
-}
+import { executorRegistry, resolveKey, STRATEGY_MANAGER_KEY } from './registry'
 
 /** The observed calm inputs for one `!paused ∧ ¬healthy` strategy. */
 export class CalmCheck {
@@ -123,12 +89,11 @@ export class SuppressionVerdict {
  * reverts, exactly as today.
  */
 export function evaluateSuppression(executor: StrategyKeeperExecutor, chainId: ChainId): SuppressionVerdict {
-  const registryResult = executor.registry()
-  if (registryResult.isError) return SuppressionVerdict.readError('registry(): ' + registryResult.error)
-  const registry = new IRegistry(registryResult.unwrap(), chainId)
+  const registryResult = executorRegistry(executor, chainId)
+  if (registryResult.isError) return SuppressionVerdict.readError(registryResult.error)
 
-  const managerResult = registry.getContractByKey(Bytes.fromHexString(STRATEGY_MANAGER_KEY))
-  if (managerResult.isError) return SuppressionVerdict.readError('getContractByKey(): ' + managerResult.error)
+  const managerResult = resolveKey(registryResult.unwrap(), STRATEGY_MANAGER_KEY, 'STRATEGY_MANAGER')
+  if (managerResult.isError) return SuppressionVerdict.readError(managerResult.error)
   const strategyManager = new StrategyManager(managerResult.unwrap(), chainId)
 
   const strategiesResult = strategyManager.strategies()

@@ -25,7 +25,7 @@ async function main(): Promise<void> {
     functionCid,
     manifest: manifest,
     input: functionInputs,
-    version: '1.0.0',
+    version: '1.1.0',
     description: `EverStrat strategy keeper (W2) — chain ${functionInputs.chainId}`,
     config: cronConfig(),
     executionFeeLimit: '0',
