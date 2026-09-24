@@ -9,6 +9,7 @@ inputs:
   - executor: address
   - controller: address
   - exitQueue: address
+  - helper: address
   - smartAccount: address
   - maxBatches: uint32
   - maxRequestsPerBatch: uint32
@@ -17,3 +18,4 @@ abis:
   - QueueKeeperExecutor: ./abis/QueueKeeperExecutor.json
   - IExitQueue: ./abis/IExitQueue.json
   - Pausable: ./abis/Pausable.json
+  - MimicHelper: ./abis/MimicHelper.json

@@ -206,6 +206,7 @@ old trigger. Two live W2 triggers race each other for the same work.
   "controller": "0x…",
   "exitQueue": "0x…",
   "amm": "0x…",
+  "helper": "0x…",
   "smartAccount": "0x…",
   "maxBatches": 250,
   "maxRequestsPerBatch": 50,
@@ -234,6 +235,15 @@ only for its pause flag: `_queueUpkeepStatus` refuses to recommend work while
 the AMM is paused, and W1 has to refuse for the same reason
 (`Controller.priceBatch` is `whenNotPaused` on the Controller alone, so an
 AMM-only pause would not stop the transaction).
+
+The **helper** address is Mimic's own `MimicHelper`, used for the single
+Controller-balance read. It is an input for the same reason the others are:
+`environment.getNativeTokenBalance` in lib-ts pins one helper address for
+every chain, and a chain whose helper lives elsewhere answers `0x` — which
+surfaces as an ABI decode overrun that aborts the whole tick, not as a zero
+balance. Look the helper up per chain rather than trusting the lib-ts
+default. On Base Sepolia it is
+`0x5cf82cBED1110fc2f75B3413d53abac492931804`.
 
 ### 2.2 Test locally first
 

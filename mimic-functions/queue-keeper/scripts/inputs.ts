@@ -19,6 +19,7 @@ export interface QueueKeeperInputs {
   controller: string
   exitQueue: string
   amm: string
+  helper: string
   smartAccount: string
   maxBatches: number
   maxRequestsPerBatch: number
@@ -53,6 +54,11 @@ export function inputs(requireSmartAccount = false): QueueKeeperInputs {
     // work while the AMM is paused, and Controller.priceBatch is whenNotPaused
     // on the Controller alone — so W1 has to check the AMM itself.
     amm: required('AMM_ADDRESS'),
+    // MimicHelper used for the Controller balance read. lib-ts hardcodes one
+    // helper address for every chain and it is not deployed on Base Sepolia;
+    // the input keeps the function portable across Mimic's per-chain helper
+    // deployments. On Base Sepolia: 0x5cf82cBED1110fc2f75B3413d53abac492931804.
+    helper: required('MIMIC_HELPER_ADDRESS'),
     smartAccount: requireSmartAccount ? required('SMART_ACCOUNT_ADDRESS') : UNASSIGNED_SMART_ACCOUNT,
     // 250 is far above the 25 live-priced cap. 50 is looser than
     // maxUsersPerUpkeep (default 20). See README "Why the split".
