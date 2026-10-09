@@ -18,18 +18,16 @@ Automation for EverStrat's keeper plane, running on the
 - **W2** (`mimic-functions/strategy-keeper/`) — a thin Mimic relay function.
   `StrategyKeeperExecutor` exposes its own `checker()` returning
   `(canExec, execPayload)`; the function forwards the payload **verbatim** —
-  no off-chain re-derivation, no payload interpretation. One exception
-  (keepers#27): a Rebalance whose every selected (`!paused && !isHealthy()`)
-  strategy is not calm is a guaranteed on-chain revert
-  (`UniCLStrat.rebalance()` requires `_isCalm()` even when `!isHealthy()`
-  comes only from turbulence), so the tick is suppressed instead of relayed —
-  see `src/suppression.ts`. Suppression only ever withholds the contract's
-  own bytes; it never builds a payload. What W2 does choose is the intent's
-  max fee (`src/feecap.ts`): a per-action gas-price ceiling, or a share of the
-  amount moved, never above `maxFee` — a solver cannot fill above it, so a
-  relay during a gas spike lapses and the next tick retries. Every tick logs
-  one class: `relay` / `suppressed-noop-rebalance` / `read-error` /
-  `config-error`.
+  no off-chain re-derivation, no payload interpretation. What W2 does
+  choose is when to relay and the intent's max fee (`src/feecap.ts`):
+  Rebalance, Sync and WithdrawShortfall wait while the Chainlink gas feed
+  reads above their gwei ceiling, and relay under a max fee of ceiling ×
+  `feeCapGas`; amount-moving actions are capped at a share of the amount.
+  Waiting only ever withholds the contract's own bytes; it never builds a
+  payload. The keepers#27 no-op Rebalance suppression was removed
+  (keepers#31) once every registered strategy reported `isHealthy()` while
+  not calm (everstrat-xyz/contracts#51). Every tick logs one class:
+  `relay` / `deferred-gas` / `read-error` / `config-error`.
 W4 (`freeze-watch/`), the read-only freeze-precursor watcher, was removed
 along with the Go toolchain and CRE CLI it was the last consumer of. It is in
 git history if it comes back.
@@ -70,7 +68,8 @@ W2 reads one amount — `strategyUpkeepStatus().amount` — and only to price
 the max fee of a DepositExcess / Harvest / ProvideExitLiquidity relay. It
 never reaches the calldata, which is still `checker()`'s bytes.
 
-**Reviewing (W2):** any path from the fee cap's reads into `addCall`.
+**Reviewing (W2):** any path from the fee cap's or gas gate's reads into
+`addCall`.
 
 ### 2. The tick clock is seconds, not milliseconds
 
@@ -136,7 +135,19 @@ probe `has()` first (`decide.ts` → `getBatch`). Same class of trap:
 
 **Reviewing:** any raw `.get()` on the batch map, any exponent near 256.
 
-### 5. Both functions read; only the intent writes
+### 5. Gas price is a feed, never `block.basefee`
+
+An oracle read is an `eth_call`, and through `eth_call` `block.basefee` reads
+**0** — on Geth, reth and Tenderly alike (checked 2026-10-09) — because the
+call carries no gas price. A gate built on it would relay into every spike.
+W2 reads Chainlink's Fast Gas feed (wei per gas, 0 decimals) and rejects a
+feed with any other `decimals()` as misconfigured; a stale or unreadable feed
+degrades to the fee cap alone (`src/feecap.ts` → `readGasPrice`).
+
+**Reviewing:** any gas-price input that comes from a contract read other than
+the feed.
+
+### 6. Both functions read; only the intent writes
 
 The single state-changing path in either function is the EvmCall intent it
 emits at the end of a tick. Everything else is an oracle-backed read. Anything
@@ -157,9 +168,11 @@ by re-running the function's `encode`.
 Do not "recompute" a fixture from the code under test to make it pass — that
 is testing the code against itself.
 
-Incident replays go one step further: W2's `tests/incident-fixtures.ts` is
-chain-verbatim archive reads (raw return data) from the keepers#27 incident
-blocks, cross-checked against ethers' encoding where the two must agree.
+Incident replays go one step further: chain-verbatim archive reads (raw
+return data) from the incident blocks, cross-checked against ethers' encoding
+where the two must agree. keepers#27's lived in W2's
+`tests/incident-fixtures.ts` until the suppression it tested was removed; it
+is in git history.
 
 ### The tests run the real compiled WASM
 
@@ -185,10 +198,10 @@ looks exactly like a broken keeper.
 constants in `decide.ts` must move with them or every payload is silently
 retargeted. Same rule for W2's `StrategyAction` ordinals 0–6 in
 `mimic-functions/strategy-keeper/src/actions.ts`
-(`IStrategyKeeperExecutor.StrategyAction`) — a moved ordinal retargets
-suppression and prices every fee cap for the wrong work — and the registry
-keys (`keccak256("STRATEGY_MANAGER" / "EXIT_QUEUE" /
-"QUEUE_KEEPER_EXECUTOR")`) pinned in `src/registry.ts`.
+(`IStrategyKeeperExecutor.StrategyAction`) — a moved ordinal gates and
+prices every action as the wrong work — and the registry keys
+(`keccak256("EXIT_QUEUE" / "QUEUE_KEEPER_EXECUTOR")`) pinned in
+`src/registry.ts`.
 
 ### Divergence classification is code, not judgment
 

@@ -46,9 +46,9 @@ show up:
 
 W2's decisions are all bounded re-derivations — a "truer" off-chain number
 would revert — so `checker()` stays authoritative and the function only
-relays its `execPayload` verbatim. It chooses the intent's max fee per action
-(a gas-price ceiling, or a share of the amount moved), so work that can wait
-waits out gas spikes; see docs/MIMIC_CUTOVER.md §1.5.
+relays its `execPayload` verbatim. It chooses when to relay and the intent's
+max fee: work that can wait out a gas spike waits for the Chainlink gas feed
+to come under its ceiling; see docs/MIMIC_CUTOVER.md §1.5.
 
 Both executors authenticate the same way: Mimic calls `perform()` from a
 smart account that must be in the executor's `allowExecutorCaller` allowlist
@@ -110,8 +110,7 @@ create its task with the same smart-account input, allowlist that signer.
 │   │   └── tests/          # raw-mock oracle harness + scenario specs
 │   ├── strategy-keeper/    # W2 — checker() relay, payload forwarded verbatim
 │   │   ├── src/function.ts # tick: read checker(), relay execPayload
-│   │   ├── src/suppression.ts # no-op Rebalance suppression (keepers#27)
-│   │   ├── src/feecap.ts   # per-action max fee: gwei ceilings, deadline ramp
+│   │   ├── src/feecap.ts   # gas gate + max fee: gwei ceilings, deadline ramp
 │   │   └── tests/
 │   └── ABIS.md             # Vendored-ABI provenance and refresh recipe
 ├── docs/MIMIC_CUTOVER.md   # The cutover runbook

@@ -17,6 +17,8 @@ export interface StrategyKeeperInputs {
   chainId: number
   executor: string
   smartAccount: string
+  gasPriceFeed: string
+  feeCapGas: number
   maxFee: string
   rebalanceMaxGwei: string
   syncMaxGwei: string
@@ -28,13 +30,18 @@ export interface StrategyKeeperInputs {
 }
 
 /**
- * Fee-cap defaults, derived in docs/MIMIC_CUTOVER.md ("Fee caps") from 30 days
- * of mainnet base fees and W2's own settlements. maxFee is the absolute USD
- * ceiling over every per-action cap; it has to clear the urgent withdrawal
- * cap (~$35 at 3 gwei, three strategies, ETH $2,700) or a near-expiry
- * shortfall is clamped below what it needs.
+ * Gas-gate and fee-cap defaults, derived in docs/MIMIC_CUTOVER.md ("Gas gate
+ * and fee caps") from mainnet base fees, the Chainlink Fast Gas feed and W2's
+ * own settlements.
+ *
+ * FEE_CAP_GAS is not a gas limit: a gas-gated intent's max fee is its gwei
+ * ceiling × this, so it only has to stay above the largest bill any W2 action
+ * can run up (~9.8M gas-equivalent for four v2 strategies rebalancing at
+ * once, at the worst observed solver markup). MAX_FEE applies only to
+ * undecodable payloads and as the clamp on amount-based caps.
  */
 const FEE_DEFAULTS = {
+  FEE_CAP_GAS: '10000000',
   MAX_FEE: '50',
   REBALANCE_MAX_GWEI: '0.4',
   SYNC_MAX_GWEI: '0.25',
@@ -57,6 +64,21 @@ function wholeNumber(name: keyof typeof FEE_DEFAULTS): number {
   return value
 }
 
+/** Chainlink Fast Gas / Gwei — mainnet only. Elsewhere set GAS_PRICE_FEED, or run cap-only. */
+const MAINNET_FAST_GAS_FEED = '0x169E633A2D1E6c10dD91238Ba11c4A708dfEF37C'
+const NO_FEED = '0x0000000000000000000000000000000000000000'
+
+function gasPriceFeed(chainId: number): string {
+  const configured = process.env.GAS_PRICE_FEED
+  if (configured) return configured
+  if (chainId === 1) return MAINNET_FAST_GAS_FEED
+  // Without a feed every gas-priced action relays under its cap alone: the
+  // solver still cannot fill above ceiling × FEE_CAP_GAS, but nothing waits
+  // out a spike below that. Say so rather than degrade silently.
+  console.warn(`no gas feed for chain ${chainId}: set GAS_PRICE_FEED, or W2 runs cap-only`)
+  return NO_FEED
+}
+
 /** Stand-in for the smart account before a trigger exists. See `inputs()`. */
 const UNASSIGNED_SMART_ACCOUNT = '0x0000000000000000000000000000000000000000'
 
@@ -76,10 +98,13 @@ export function required(name: string): string {
  * zero address.
  */
 export function inputs(requireSmartAccount = false): StrategyKeeperInputs {
+  const chainId = Number(required('CHAIN_ID'))
   return {
-    chainId: Number(required('CHAIN_ID')),
+    chainId,
     executor: required('STRATEGY_EXECUTOR_ADDRESS'),
     smartAccount: requireSmartAccount ? required('SMART_ACCOUNT_ADDRESS') : UNASSIGNED_SMART_ACCOUNT,
+    gasPriceFeed: gasPriceFeed(chainId),
+    feeCapGas: wholeNumber('FEE_CAP_GAS'),
     maxFee: fee('MAX_FEE'),
     rebalanceMaxGwei: fee('REBALANCE_MAX_GWEI'),
     syncMaxGwei: fee('SYNC_MAX_GWEI'),

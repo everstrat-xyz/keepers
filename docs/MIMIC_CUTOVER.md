@@ -58,7 +58,15 @@ is deployed, and recreating a task can rotate it: update the trigger input
 
 W2's function is a relay: the contract's own `checker()` decides, and
 `mimic-functions/strategy-keeper` forwards its `execPayload` verbatim. What it
-does choose is the intent's max fee, per action (§1.5).
+does choose is when to relay and the intent's max fee, per action (§1.5).
+
+**Ship v2.0.0 only at the v2 strategy cutover.** It drops keepers#27's no-op
+Rebalance suppression (keepers#31). That is safe only once every registered
+strategy reports `isHealthy() == true` while its pool is not calm
+(everstrat-xyz/contracts#51). On 2026-10-09 three of the four registered
+mainnet strategies (`0x5E12…ac38`, `0x59C4…2252`, `0x3Fb6…6501`) were still
+pre-fix; with any of them registered, a turbulent pool brings back a
+reverting Rebalance relayed every tick.
 
 ### 1.1 Deploy the function
 
@@ -80,6 +88,8 @@ deployment chain. Configure the function inputs:
   "chainId": 10,
   "executor": "0x…",
   "smartAccount": "0x…",
+  "gasPriceFeed": "0x169E633A2D1E6c10dD91238Ba11c4A708dfEF37C",
+  "feeCapGas": 10000000,
   "maxFee": "50",
   "rebalanceMaxGwei": "0.4",
   "syncMaxGwei": "0.25",
@@ -92,7 +102,9 @@ deployment chain. Configure the function inputs:
 ```
 
 Every key is required by `manifest.yaml`; `scripts/inputs.ts` fills the fee
-keys with these defaults unless `scripts/.env` overrides them. A malformed or
+keys with these defaults unless `scripts/.env` overrides them. `gasPriceFeed`
+is Chainlink Fast Gas / Gwei, which exists on mainnet only; on another chain
+set `GAS_PRICE_FEED`, or pass the zero address to run cap-only (§1.5). A malformed or
 inconsistent fee input makes every tick log `W2 config-error` naming the field
 and emit nothing — check the first execution's logs after creating the task.
 
@@ -123,67 +135,94 @@ executorCallerCount() == 1
   byte-for-byte
 
 Watch one full poll cycle before declaring W2 live. The relay log line names
-the action and how its max fee was built.
+the action, the gas feed reading against its ceiling, and how its max fee was
+built; a `W2 deferred-gas` line is a tick waiting out gas, not a fault.
 
-### 1.5 Fee caps
+### 1.5 Gas gate and fee caps
 
 A solver quotes ≈ gasUsed × gas price × its markup, and cannot fill above the
-intent's max fee. So the max fee is a gas-price ceiling: during a spike the
-intent lapses and the next 5-minute tick retries, at the cost of an idle tick.
-W2 sets it per action, by what waiting costs, converts it to USD at the Mimic
-oracle's native-token price, and clamps it to `maxFee`.
+intent's max fee. W2 handles each action by what waiting costs:
 
-| action | what waiting costs | cap |
+| action | what waiting costs | handling |
 |---|---|---|
-| WithdrawShortfall | A priced exit is committed and strands at `pricedAt + 3 days` | `withdrawMaxGwei` until `withdrawRampStartHours` before the earliest in-window batch with unprocessed users expires, linear to `withdrawUrgentMaxGwei` at `withdrawRampEndHours`. No amount term: `minWithdrawETH` can be 1e14 |
-| Rebalance | ~$0.06/h of LP fees for the largest strategy | `rebalanceMaxGwei`, raised to the withdrawal ramp when a batch nears expiry — `checker()` hides the WithdrawShortfall behind a pending Rebalance |
-| Sync | NAV lags by at most a day of unpoked fees (~0.08% of NAV) | `syncMaxGwei` |
-| DepositExcess, HarvestPerformanceFees, ProvideExitLiquidity | Yield on idle ETH only | `amountFeeBps` of `strategyUpkeepStatus().amount` |
+| WithdrawShortfall | A priced exit is committed and strands at `pricedAt + 3 days` | gwei ceiling `withdrawMaxGwei` until `withdrawRampStartHours` before the earliest in-window batch with unprocessed users expires, linear to `withdrawUrgentMaxGwei` at `withdrawRampEndHours`. No amount term: `minWithdrawETH` can be 1e14 |
+| Rebalance | LP fees on the out-of-range strategy | gwei ceiling `rebalanceMaxGwei`, raised to the withdrawal ramp when a batch nears expiry — `checker()` hides the WithdrawShortfall behind a pending Rebalance |
+| Sync | NAV lags by at most a day of unpoked fees (~0.08% of NAV) | gwei ceiling `syncMaxGwei` |
+| DepositExcess, HarvestPerformanceFees, ProvideExitLiquidity | Yield on idle ETH only | max fee `amountFeeBps` of `strategyUpkeepStatus().amount`, clamped to `maxFee` |
 | undecodable payload | — | flat `maxFee` |
 
-A gwei ceiling becomes a fee through a gas budget per strategy the action
-touches — Rebalance 1.69M per selected strategy, Sync 210k and
-WithdrawShortfall 980k per registered strategy — times a 1.45 solver markup.
-Adding a strategy scales the budget; no input needs to change.
+A gwei ceiling is enforced twice:
 
-**Where the defaults come from** (analysis of 2026-09-24):
+- **Gate.** While `gasPriceFeed` reads above the ceiling, the tick logs
+  `deferred-gas` and emits nothing; the next 5-minute tick asks again. This
+  is the precise check, and it needs no knowledge of how much gas the action
+  burns — so strategy upgrades and new strategies never require retuning.
+- **Cap.** The intent's max fee is ceiling × `feeCapGas`, converted to USD at
+  the Mimic oracle's native-token price. `feeCapGas` is not a gas limit: it is
+  a deliberately loose allowance that bounds the solver at fill time — a spike
+  between the read and settlement, or a solver pricing far above its gas —
+  and is the only check while the feed is unavailable.
+
+**Why a feed.** `block.basefee` read through an oracle (`eth_call`) is 0 on
+Geth, reth and Tenderly alike (CLAUDE.md §5). Chainlink Fast Gas / Gwei
+(`0x169E…F37C`, 0 decimals, wei per gas) is an ordinary view read. Over the 14
+days to 2026-10-09 it updated 637 times, median gap 15 minutes, at most 2.01h
+apart. Read at the block before each of W2's 13 mainnet settlements, it gave
+the same fill/defer verdict as v1.1.0's per-action fee caps would have, all
+13 times, and tracked what the solver paid (0.073 vs 0.061 gwei, 0.163 vs 0.167,
+0.549 vs 0.522; at the $13.40 spike 1.584 vs 1.234).
+
+**An unusable feed degrades to the cap alone.** No feed configured, a read
+error, a non-positive answer, or no update for 3h (vs the 2.01h observed
+maximum) relays under the cap and says so in the relay line — a withdrawal
+deadline does not wait for Chainlink. A feed whose `decimals()` is not 0 is a
+price feed by mistake and is a `config-error`: gating by it would misread
+every tick.
+
+**`feeCapGas` = 10,000,000.** It must stay above the largest bill any W2
+action can run up, as gas × solver markup. Worst observed markup is 1.41.
+Largest gas-gated bills: v1 WithdrawShortfall 2.94M (three strategies), v1
+Rebalance 1.69M per strategy. keepers#31's fork measurements put UniCLStrat v2
+at up to +376k per strategy on withdraw and +44k on rebalance, so four v2
+strategies rebalancing in one tx is ~7.0M gas, ~9.8M with markup. Headroom
+above that is the allowance's whole job; it only needs revisiting if the
+strategy count grows well past four. At ETH $2,700 the resulting caps are
+Sync $6.75, withdrawal floor $8.10, Rebalance $10.80, urgent withdrawal
+$81 — bounds, not prices: the solver bills its gas.
+
+**Where the ceilings come from** (analysis of 2026-09-24, re-checked against
+the feed 2026-10-09):
 
 - *Solver pricing* — W2's 13 mainnet settlements 2026-09-20..23, priced with
-  Chainlink ETH/USD at each block. Fee over gas cost: 1.03–1.41 (one 0.74 where
-  the base fee rose after the quote); worst per action sets the 1.45 markup.
-  Gas: Rebalance 1.45–1.69M (one strategy each), Sync 0.52–0.60M,
-  DepositExcess 2.87–3.14M, WithdrawShortfall 2.94M (three strategies).
-  Solver tip 0.01–0.39 gwei, median ~0.15.
-- *Gas market* — 30 days of mainnet base fees (blocks 25,827,075–26,043,075).
-  Median 0.073 gwei, p90 0.33, p99 1.40, max 6.3. At the ceiling (base + 0.15
-  tip), share of 5-minute ticks that fill / longest stretch blocked:
+  Chainlink ETH/USD at each block. Fee over gas cost 1.03–1.41 (one 0.74
+  where the base fee rose after the quote). Solver tip 0.01–0.39 gwei.
+- *Gas market* — two windows, because they differ. Share of 5-minute ticks
+  under each ceiling / longest stretch above it:
 
-  | ceiling | fills | longest blocked |
+  | ceiling | 30d to 09-23, base + 0.15 | 14d to 10-09, feed |
   |---|---|---|
-  | 0.25 gwei | 62% | 18.2h |
-  | 0.30 gwei | 75% | 15.5h |
-  | 0.40 gwei | 86% | 11.8h |
-  | 1.00 gwei | 97% | 2.3h |
-  | 3.00 gwei | 99.8% | 0.3h |
+  | 0.25 gwei | 62% / 18.2h | 56% / 38.4h |
+  | 0.30 gwei | 75% / 15.5h | 59% / 37.6h |
+  | 0.40 gwei | 86% / 11.8h | 64% / 20.2h |
+  | 1.00 gwei | 97% / 2.3h | 78% / 8.8h |
+  | 3.00 gwei | 99.8% / 0.3h | 95% / 3.0h |
 
-  The withdrawal floor was never blocked longer than 15.5h against a 72h
-  window; the ramp is for the tail beyond that sample.
-- *Protocol* — LP fees collected by the three strategies since 2026-09-12:
-  $9.26, ~$2.19 per ETH-day (~30% APR, lower bound: uncollected fees excluded).
-  One rebalance per strategy in that time (~8 days in range). Every exit batch
-  so far was processed 5–35 minutes after pricing. `performanceFeeBps` is 0 on
-  mainnet, so HarvestPerformanceFees does not fire today.
-- *Deposit share* — 115 bps pays back in ~14 days at $2.19 per ETH-day. At the
-  0.1 ETH `minDepositETH` that is ~$3.1, a ~0.3 gwei ceiling; larger deposits
-  clear higher gas.
+  The second window was far more expensive (feed median 0.20 gwei, p90 1.9,
+  max 10.6). The withdrawal ramp held in both: the longest block at the 0.3
+  gwei floor (37.6h) ends with ~34h still left, before the ramp starts at
+  24h, and the 3 gwei urgent ceiling was never blocked longer than 3.0h
+  against a 12h margin. What the second window does show is that Sync and
+  Rebalance can wait the better part of two days and one day at their
+  ceilings — a policy trade-off to revisit if that persists.
+- *Protocol* — LP fees collected by the three v1 strategies 2026-09-12..23:
+  $9.26, ~$2.19 per ETH-day (~30% APR, lower bound: uncollected fees
+  excluded). Every exit batch so far was processed 5–35 minutes after
+  pricing. `performanceFeeBps` is 0 on mainnet, so HarvestPerformanceFees
+  does not fire today.
+- *Deposit share* — 115 bps pays back in ~14 days at $2.19 per ETH-day.
 
-Replaying the 13 settlements under these caps: 8 fill unchanged, 5 defer
-2.6–9.9h, and total solver spend drops from $34.20 to ~$21.
-
-Revisit the ceilings, not the ETH price: caps follow the oracle price on every
-tick. Revisit the gas budgets if a strategy type with a different gas profile
-is added, and `maxFee` if ETH moves enough that the urgent withdrawal cap
-(~$35 at ETH $2,700) approaches it.
+Revisit the ceilings and `amountFeeBps` as policy; caps follow the oracle ETH
+price on every tick, and nothing here tracks strategy gas.
 
 **Replacing a live trigger.** The inputs are new, so an existing W2 trigger
 cannot be edited into this version: deploy the function, create a new trigger
