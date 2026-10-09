@@ -2,8 +2,7 @@ import { Bytes } from '@mimicprotocol/lib-ts'
 
 // StrategyAction ordinals, pinned to IStrategyKeeperExecutor.StrategyAction.
 // Solidity enums reorder silently; if the contract enum moves, these must move
-// with it or suppression targets the wrong action and every fee cap is priced
-// for the wrong work.
+// with it or every action is gated and priced as the wrong work.
 export const ActionNone: i32 = 0
 export const ActionRebalance: i32 = 1
 export const ActionWithdrawShortfall: i32 = 2
@@ -21,8 +20,8 @@ const PERFORM_PAYLOAD_LENGTH = 36
 /**
  * Extracts the action ordinal from a `perform(uint8)` payload, or -1 when the
  * bytes are not exactly selector + one word. Anything undecodable is relayed
- * verbatim by the caller — the pre-suppression behaviour, never worse than
- * today — under the flat maxFee, since there is no work to price it by.
+ * verbatim by the caller under the flat maxFee, since there is no work to
+ * gate or price it by.
  */
 export function decodePerformAction(execPayload: Bytes): i32 {
   if (execPayload.length != PERFORM_PAYLOAD_LENGTH) return -1

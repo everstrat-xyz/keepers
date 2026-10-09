@@ -13,8 +13,8 @@ as a build error.
 | Field | Value |
 | --- | --- |
 | Source repo | `everstrat-xyz/contracts` |
-| Commit | `b599469` (main) — every previously vendored ABI regenerates identically; adds W2's `IExitQueue` and `IQueueKeeperExecutor` |
-| Vendored on | 2026-09-24 |
+| Commit | `157129b` (main) — every vendored ABI regenerates identically; adds W2's `AggregatorV3Interface`, drops the suppression-only ABIs |
+| Vendored on | 2026-10-09 |
 
 ## Contents
 
@@ -30,21 +30,18 @@ as a build error.
 
 | File | Why the function needs it |
 | --- | --- |
-| `StrategyKeeperExecutor.json` | The W2 target: `checker()` in, `perform` calldata out; `registry()` for the suppression walk; `strategyUpkeepStatus()` and `MAX_BATCH_SCAN` for the fee cap |
-| `IRegistry.json` | `getContractByKey(STRATEGY_MANAGER / EXIT_QUEUE / QUEUE_KEEPER_EXECUTOR)` — the registry has no named getter |
-| `StrategyManager.json` | `strategies()` — the executor's Rebalance selection set, and the strategy count gas budgets scale by |
-| `IExitQueue.json` | Withdrawal-deadline scan for the fee cap: `currentBatchId`, `batchInfo`, `unprocessedUsersCount`, `MAX_BATCH_PROCESSING_TIME` (same file as W1's) |
+| `StrategyKeeperExecutor.json` | The W2 target: `checker()` in, `perform` calldata out; `registry()`, `MAX_BATCH_SCAN` and `strategyUpkeepStatus()` for the gas gate and fee caps |
+| `IRegistry.json` | `getContractByKey(EXIT_QUEUE / QUEUE_KEEPER_EXECUTOR)` — the registry has no named getter |
+| `IExitQueue.json` | Withdrawal-deadline scan: `currentBatchId`, `batchInfo`, `unprocessedUsersCount`, `MAX_BATCH_PROCESSING_TIME` (same file as W1's) |
 | `IQueueKeeperExecutor.json` | `nextLiveBatchIdToProcess()` — the cursor the executor's `_pendingRedemptionNeedsETH` scans from |
-| `UniCLStrat.json` | Per-strategy suppression reads: `paused`, `isHealthy`, `pool`, `maxTickDeviation`, `twapInterval`, `shortTwapInterval` (public state the interfaces do not declare) |
-| `IUniswapV3Pool.json` | `_isCalm()` inputs: `slot0` spot tick and `observe` tick cumulatives |
+| `AggregatorV3Interface.json` | The gas feed (Chainlink Fast Gas / Gwei on mainnet): `decimals`, `latestRoundData`. Chainlink's interface as `forge build` emits it from the contracts repo's Chainlink dependency |
 
 The **contract** ABIs are vendored where the function reads public state
 (`minBatchAge`, `nextBatchIdToProcess`, `maxTickDeviation`) that the
 interfaces do not declare. Interfaces are vendored where they are the whole
 surface: `IExitQueue`, `IQueueKeeperExecutor` (W2 reads only its cursor),
 `IRegistry` (`getContractByKey` is the only read), and
-`IUniswapV3Pool` (the pools are external Uniswap deployments — no pool
-contract exists in the repo to vendor).
+`AggregatorV3Interface` (the feed is an external Chainlink deployment).
 
 An ABI that no `manifest.yaml` lists is dead weight and should be deleted: it
 is compiled into nothing, and its presence implies a read the function does not
@@ -64,16 +61,12 @@ jq -S '.abi' "$CONTRACTS/out/StrategyKeeperExecutor.sol/StrategyKeeperExecutor.j
   > mimic-functions/strategy-keeper/abis/StrategyKeeperExecutor.json
 jq -S '.abi' "$CONTRACTS/out/IRegistry.sol/IRegistry.json" \
   > mimic-functions/strategy-keeper/abis/IRegistry.json
-jq -S '.abi' "$CONTRACTS/out/StrategyManager.sol/StrategyManager.json" \
-  > mimic-functions/strategy-keeper/abis/StrategyManager.json
-jq -S '.abi' "$CONTRACTS/out/UniCLStrat.sol/UniCLStrat.json" \
-  > mimic-functions/strategy-keeper/abis/UniCLStrat.json
-jq -S '.abi' "$CONTRACTS/out/IUniswapV3Pool.sol/IUniswapV3Pool.json" \
-  > mimic-functions/strategy-keeper/abis/IUniswapV3Pool.json
 jq -S '.abi' "$CONTRACTS/out/IExitQueue.sol/IExitQueue.json" \
   > mimic-functions/strategy-keeper/abis/IExitQueue.json
 jq -S '.abi' "$CONTRACTS/out/IQueueKeeperExecutor.sol/IQueueKeeperExecutor.json" \
   > mimic-functions/strategy-keeper/abis/IQueueKeeperExecutor.json
+jq -S '.abi' "$CONTRACTS/out/AggregatorV3Interface.sol/AggregatorV3Interface.json" \
+  > mimic-functions/strategy-keeper/abis/AggregatorV3Interface.json
 
 (cd mimic-functions/queue-keeper && npx mimic codegen)
 (cd mimic-functions/strategy-keeper && npx mimic codegen)

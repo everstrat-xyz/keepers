@@ -1,5 +1,5 @@
 /**
- * W2 strategy-keeper — Mimic function (checker relay + no-op suppression).
+ * W2 strategy-keeper — Mimic function (checker relay + gas gate).
  *
  * The W2 decision logic was always pinned to bounded on-chain helpers, so it
  * stays there: `StrategyKeeperExecutor.checker()` returns canExec plus the
@@ -9,34 +9,29 @@
  * structurally impossible here: the bytes come from the contract view, not
  * from this code.
  *
- * One exception (keepers#27): a Rebalance payload whose every selected
- * (`!paused && !isHealthy()`) strategy is not calm is a guaranteed on-chain
- * revert — `UniCLStrat.rebalance()` requires `_isCalm()` even when
- * `isHealthy()` is false only because the market is turbulent. Relaying it
- * burns gas every tick and moves nothing, so the tick is suppressed instead.
- * Suppression only ever withholds the contract's own bytes; it never builds
- * a payload. See src/suppression.ts.
+ * What W2 does choose is when to relay and the intent's max fee: work that
+ * can wait out a gas spike waits for the gas feed to come under its ceiling,
+ * and every intent's max fee is capped. See src/feecap.ts.
  *
- * The one thing W2 does choose is the intent's max fee: a gas-price ceiling
- * or a share of the amount moved, per action, never above maxFee. A solver
- * cannot fill above it, so a relay during a gas spike lapses and the next
- * tick retries. See src/feecap.ts.
+ * keepers#27's no-op Rebalance suppression is gone (keepers#31): every
+ * strategy built after everstrat-xyz/contracts#51 reports isHealthy() while
+ * its pool is not calm, so the executor never selects a Rebalance that
+ * `_isCalm()` would revert. Ship this only once no pre-fix strategy is
+ * registered, or the gas-burning loop returns for that strategy.
  *
  * If any view errors, emit nothing: the next tick retries. A relay that
  * guesses is worse than a relay that waits. An execPayload that does not
- * decode as perform(uint8) is relayed verbatim under the flat maxFee — the
- * pre-suppression behaviour, never worse than today.
+ * decode as perform(uint8) is relayed verbatim under the flat maxFee.
  *
- * One log class per tick: `relay` / `suppressed-noop-rebalance` /
- * `read-error` / `config-error` (idle ticks log no upkeep, as before).
+ * One log class per tick: `relay` / `deferred-gas` / `read-error` /
+ * `config-error` (idle ticks log no upkeep, as before).
  */
 
 import { BigInt, environment, EvmCallBuilder, log } from '@mimicprotocol/lib-ts'
 
 import { StrategyKeeperExecutor } from './types/StrategyKeeperExecutor'
-import { actionName, ActionRebalance, decodePerformAction } from './actions'
-import { feeCap, FeePolicy } from './feecap'
-import { evaluateSuppression } from './suppression'
+import { actionName, decodePerformAction } from './actions'
+import { decideFee, FeePolicy, Outcome } from './feecap'
 import { inputs } from './types'
 
 export default function main(): void {
@@ -62,41 +57,31 @@ export default function main(): void {
   }
 
   const action = decodePerformAction(result.execPayload)
-  let selectedStrategies = 0
-  let relayNote = 'forwarding checker() execPayload verbatim'
-  if (action == ActionRebalance) {
-    const verdict = evaluateSuppression(executor, inputs.chainId)
-    if (verdict.error != '') {
-      log.warning('W2 read-error: ' + verdict.error + ' — emitting nothing this tick')
-      return
-    }
-    if (verdict.suppress) {
-      let detail = ''
-      for (let i = 0; i < verdict.checks.length; i++) {
-        detail += (i == 0 ? '' : ' | ') + verdict.checks[i].describe()
-      }
-      log.info('W2 suppressed-noop-rebalance: every selected strategy is not calm, batch cannot move — ' + detail)
-      return
-    }
-    selectedStrategies = verdict.checks.length
-    relayNote = 'at least one calm unhealthy strategy — relaying checker() execPayload verbatim'
-  }
+  const name = actionName(action)
 
-  // The runner's clock is milliseconds; batch expiry is block-time seconds
-  // (CLAUDE.md §2). Convert once, here.
+  // The runner's clock is milliseconds; batch expiry and the gas feed's
+  // updatedAt are block-time seconds (CLAUDE.md §2). Convert once, here.
   const now = BigInt.fromU64(environment.getContext().timestamp).div(BigInt.fromI32(1000)).toI64()
 
-  const capResult = feeCap(executor, inputs.chainId, action, selectedStrategies, policy, now)
-  if (capResult.isError) {
-    log.warning('W2 read-error: fee cap: ' + capResult.error + ' — emitting nothing this tick')
+  const decision = decideFee(executor, inputs.chainId, action, policy, now)
+  if (decision.outcome == Outcome.ConfigError) {
+    log.error('W2 config-error: ' + decision.note + ' — emitting nothing until the trigger inputs are fixed')
     return
   }
-  const cap = capResult.unwrap()
-  log.info('W2 relay: ' + actionName(action) + ', ' + relayNote + ' — max fee ' + cap.basis)
+  if (decision.outcome == Outcome.ReadError) {
+    log.warning('W2 read-error: ' + name + ': ' + decision.note + ' — emitting nothing this tick')
+    return
+  }
+  if (decision.outcome == Outcome.DeferGas) {
+    log.info('W2 deferred-gas: ' + name + ', ' + decision.note + ' — retrying next tick')
+    return
+  }
+
+  log.info('W2 relay: ' + name + ', forwarding checker() execPayload verbatim — ' + decision.note)
 
   EvmCallBuilder.forChain(inputs.chainId)
     .addCall(inputs.executor, result.execPayload)
     .addUser(inputs.smartAccount)
     .build()
-    .send(cap.fee)
+    .send(decision.fee)
 }
